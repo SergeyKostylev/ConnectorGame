@@ -4,7 +4,7 @@ import app.config as config
 class MatrixFrame:
     def __init__(self, name, rotation, frame_type):
         self.__name = name
-        self.__rotation = 0
+        self.__rotation = 0 # will be set in __turn_by_degrees()
         self.__matrix = config.frames[name]
         self.__turn_by_degrees(rotation)
         self.__frame_type = frame_type
