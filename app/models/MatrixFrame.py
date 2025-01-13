@@ -12,6 +12,13 @@ class MatrixFrame:
     def matrix(self):
         return self.__matrix
 
+    @property
+    def name(self):
+        return self.__name
+    @property
+    def rotation(self):
+        return self.__rotation
+
     def has_connector(self, duration: str)-> bool:
         match duration:
             case 'top':
@@ -28,4 +35,4 @@ class MatrixFrame:
     def turn(self):
         transposed = list(zip(*self.__matrix))
         self.__matrix = [list(row)[::-1] for row in transposed]
-        self.__rotation = self.__rotation + 90
+        self.__rotation = 0 if (self.__rotation + 90) == 360 else self.__rotation + 90
