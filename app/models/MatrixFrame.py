@@ -1,11 +1,12 @@
 
-from app.config import frames
+import app.config as config
 
 class MatrixFrame:
     def __init__(self, name, rotation, frame_type):
         self.__name = name
-        self.__matrix = frames[name]
-        self.__rotation = rotation
+        self.__rotation = 0
+        self.__matrix = config.frames[name]
+        self.__turn_by_degrees(rotation)
         self.__frame_type = frame_type
 
     @property
@@ -21,13 +22,13 @@ class MatrixFrame:
 
     def has_connector(self, duration: str)-> bool:
         match duration:
-            case 'top':
+            case config.DURATION_TOP:
                 return self.__matrix[0][1] == 1
-            case 'right':
+            case config.DURATION_RIGHT:
                 return self.__matrix[1][2] == 1
-            case 'bottom':
+            case config.DURATION_BOTTOM:
                 return self.__matrix[2][1] == 1
-            case 'left':
+            case config.DURATION_LEFT:
                 return self.__matrix[1][0] == 1
             case _:
                 raise ValueError(f'Unknown duration {duration}')
@@ -36,3 +37,7 @@ class MatrixFrame:
         transposed = list(zip(*self.__matrix))
         self.__matrix = [list(row)[::-1] for row in transposed]
         self.__rotation = 0 if (self.__rotation + 90) == 360 else self.__rotation + 90
+
+    def __turn_by_degrees(self, degrees):
+        for _ in range(int(degrees / 90)):
+            self.turn()

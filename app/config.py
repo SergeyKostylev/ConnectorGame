@@ -32,3 +32,8 @@ console_symbols = {
     # "i0": '', "i90": '╸', "i180": '╹', "i270": '╺',
     "i0": '╤', "i90": '╢', "i180": '╧', "i270": '╟',
 }
+
+DURATION_TOP = 'top'
+DURATION_RIGHT = 'right'
+DURATION_BOTTOM = 'bottom'
+DURATION_LEFT = 'left'
