@@ -25,7 +25,7 @@ def show_in_console(matrix: Matrix):
 
 def get_default_figure_map():
     data_map = [
-        [{'name': 'g', 'rotation': 90, 'type': 'pipeline'}, {'name': 'g', 'rotation': 180, 'type': 'pipeline'}],
+        [{'name': 'i', 'rotation': 90, 'type': 'pipeline'}, {'name': 'g', 'rotation': 180, 'type': 'pipeline'}],
         [{'name': 't', 'rotation': 270, 'type': 'pipeline'}, {'name': 't', 'rotation': 90, 'type': 'pipeline'}],
         [{'name': 'g', 'rotation': 0, 'type': 'pipeline'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}]
     ]
@@ -33,7 +33,7 @@ def get_default_figure_map():
     # res = []
     # x, y = MATRIX_DEFAULT_SIZE
     # for _ in range(y):
-    #     res.append([{'name': 'l', 'rotation': 0, 'type': 'pipeline'} for _ in range(x)])
+    #     res.append([{'name': 'g', 'rotation': 0, 'type': 'pipeline'} for _ in range(x)])
     #
     # return res
 

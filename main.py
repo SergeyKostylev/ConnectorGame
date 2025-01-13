@@ -12,9 +12,11 @@ if __name__ == '__main__':
     # #
     show_graph(m)
     show_in_console(m)
+    print('-------------')
+    m.turn_frame(0, 0)
+    m.turn_frame(0, 0)
+    m.turn_frame(0, 0)
 
-    m.turn_frame(0, 0)
-    m.turn_frame(0, 0)
 
     show_in_console(m)
     show_graph(m)

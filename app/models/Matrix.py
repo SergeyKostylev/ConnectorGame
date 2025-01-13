@@ -8,7 +8,6 @@ class Matrix(nx.Graph):
         super().__init__(**attr)
         self.frames_map: list[MatrixFrame] = []
         self.__fill_frame_map(frame_map_data)
-        # TODO: mix if need
         self.__fill_graph()
 
     def __fill_frame_map(self, frame_map_data):
@@ -35,8 +34,8 @@ class Matrix(nx.Graph):
     def get_frame_or_none(self, x, y) -> MatrixFrame | None:
         return self.get_frame(x, y) if self.frame_exist(x, y) else None
 
-    def frame_exist(self, x, y):
-        return x < len(self.frames_map) and y < len(self.frames_map[x])
+    def frame_exist(self, x, y)-> bool:
+        return x >= 0 and y >= 0 and x < len(self.frames_map) and y < len(self.frames_map[x])
 
     def get_shape(self):
         return len(self.frames_map), len(self.frames_map[0])
