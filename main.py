@@ -1,4 +1,5 @@
 from app.pygame import App
+from app.services.DataMapGenerator import Generator
 from app.services.helper import *
 
 
@@ -26,5 +27,5 @@ def run_py_game():
 
 if __name__ == '__main__':
     # test_console()
-
+    # Generator().generate()
     run_py_game()
