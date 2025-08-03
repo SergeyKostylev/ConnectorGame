@@ -1,5 +1,5 @@
-MATRIX_DEFAULT_SIZE = (2, 3)
-# MATRIX_DEFAULT_SIZE = (1, 1)
+MATRIX_DEFAULT_SIZE = (3, 5)
+MATRIX_FRAME_RENDER_SIZE = 100
 
 frames = {
     "g": [[0, 1, 0],
@@ -29,7 +29,6 @@ console_symbols = {
     "l0": '┃', "l90": '━', "l180": '┃', "l270": '━',
     "t0": '┬', "t90": '┫', "t180": '┴', "t270": '┣',
     "x0": '╂', "x90": '╂', "x180": '╂', "x270": '╂',
-    # "i0": '', "i90": '╸', "i180": '╹', "i270": '╺',
     "i0": '╤', "i90": '╢', "i180": '╧', "i270": '╟',
 }
 
@@ -37,3 +36,5 @@ DURATION_TOP = 'top'
 DURATION_RIGHT = 'right'
 DURATION_BOTTOM = 'bottom'
 DURATION_LEFT = 'left'
+
+CURSOR_COLOR = (200, 50, 160)

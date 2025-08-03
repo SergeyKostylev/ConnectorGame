@@ -1,3 +1,5 @@
+from time import sleep
+
 import networkx as nx
 from app.models.MatrixFrame import MatrixFrame
 import app.config as config
@@ -7,8 +9,11 @@ class Matrix(nx.Graph):
     def __init__(self, frame_map_data: list, **attr):
         super().__init__(**attr)
         self.frames_map: list[MatrixFrame] = []
+        self.__targets_position_names = set() # see create_node_name()
+        self.__batteries_position_names = set() # see create_node_name()
         self.__fill_frame_map(frame_map_data)
         self.__fill_graph()
+        self.__last_touched_frames = set()
 
     def __fill_frame_map(self, frame_map_data):
         """ one element: {'name': 'g', 'rotation': 0, 'type': 'pipeline'}"""
@@ -16,7 +21,9 @@ class Matrix(nx.Graph):
         print(self.frames_map)
         for i, j in self.iterate_shape():
             f_data = frame_map_data[i][j]
-            self.frames_map[i][j] = MatrixFrame(f_data['name'], f_data['rotation'], f_data['type'])
+            mf = MatrixFrame(f_data['name'], f_data['rotation'], f_data['type'])
+            self.frames_map[i][j] = mf
+            self.__registrate_frame_as_target_or_battery(i, j, mf)
 
     def __fill_graph(self):
         for x, y in self.iterate_shape():
@@ -24,17 +31,47 @@ class Matrix(nx.Graph):
 
         self.reconnect_all()
 
+    def __registrate_frame_as_target_or_battery(self, i, j, mf : MatrixFrame):
+        if mf.is_pipeline():
+            return
+
+        name = create_node_name(i, j)
+
+        if mf.is_target():
+            self.__targets_position_names.add(name)
+        elif mf.is_battery():
+            self.__batteries_position_names.add(name)
+
+
     def turn_frame(self, x, y):
         self.frames_map[x][y].turn()
         self.reconnect_one(x, y, True)
+        self.__last_touched_frames.add((x, y))
+
+    def get_last_touched_frame(self) -> set | None:
+        return self.__last_touched_frames.pop() if len(self.__last_touched_frames) != 0 else None
 
     def get_frame(self, x, y) -> MatrixFrame:
         return self.frames_map[x][y]
 
+    def is_connected_to_battery(self, i, j) -> bool:
+        """ if an element is battery returns True if it connected with other battery """
+        element_pos_name = create_node_name(i, j)
+        res = False
+
+        for battery in self.__batteries_position_names:
+            if element_pos_name == battery:
+                continue
+            if nx.has_path(self, element_pos_name, battery):
+                res = True
+                break
+
+        return res
+
     def get_frame_or_none(self, x, y) -> MatrixFrame | None:
         return self.get_frame(x, y) if self.frame_exist(x, y) else None
 
-    def frame_exist(self, x, y)-> bool:
+    def frame_exist(self, x, y) -> bool:
         return x >= 0 and y >= 0 and x < len(self.frames_map) and y < len(self.frames_map[x])
 
     def get_shape(self):
@@ -100,6 +137,5 @@ class Matrix(nx.Graph):
                 self.disconnect_frames(current_node_name, top_node_name)
 
 
-
-def create_node_name(i, j):
+def create_node_name(i, j)-> str:
     return f"{i}-{j}"

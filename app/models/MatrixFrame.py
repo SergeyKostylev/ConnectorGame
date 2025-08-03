@@ -20,6 +20,15 @@ class MatrixFrame:
     def rotation(self):
         return self.__rotation
 
+    def is_target(self):
+        return self.__frame_type == 'target'
+
+    def is_battery(self):
+        return self.__frame_type == 'battery'
+
+    def is_pipeline(self):
+        return self.__frame_type == 'pipeline'
+
     def has_connector(self, duration: str)-> bool:
         match duration:
             case config.DURATION_TOP:

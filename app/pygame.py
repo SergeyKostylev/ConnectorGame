@@ -1,17 +1,23 @@
 import sys
 import pygame
-from app.services.render import Render
 
+from app.config import MATRIX_FRAME_RENDER_SIZE
+from app.services.helper import show_graph
+from app.services.render import Render, Cursor
 from app.models.Matrix import Matrix
 
 
-FPS = 60
+FPS = 24
 
 class App:
     interval = 1000 // FPS
 
     def __init__(self, matrix: Matrix):
-        self.__render = Render(matrix)
+        cursor_max_x = matrix.get_shape()[1] * MATRIX_FRAME_RENDER_SIZE
+        cursor_max_y = matrix.get_shape()[0] * MATRIX_FRAME_RENDER_SIZE
+        self.cursor = Cursor((0, 0), cursor_max_x, cursor_max_y)
+        self.matrix = matrix
+        self.__render = Render(matrix, self.cursor)
 
     def run(self):
         pygame.init()
@@ -23,10 +29,10 @@ class App:
             self.update()
 
             if current_time > threshold:
-                self.__render.test()
                 self.__render.render()
-                self.__render.flip_display()
+                # self.__render.render_new(self.matrix, self.cursor)
 
+                pygame.display.flip()
 
                 threshold += self.interval
 
@@ -41,11 +47,21 @@ class App:
                 self.exit()
 
             elif event.type == pygame.KEYDOWN:
-                snake_command = None
+                command = None
                 match event.key:
                     case pygame.K_LEFT:
-                        print("LEFT")
-                if snake_command is not None:
+                        self.cursor.move_left()
+                    case pygame.K_RIGHT:
+                        self.cursor.move_right()
+                    case pygame.K_UP:
+                        self.cursor.move_up()
+                    case pygame.K_DOWN:
+                        self.cursor.move_down()
+                    case pygame.K_SPACE:
+                        px, py = self.cursor.get_position()
+                        self.matrix.turn_frame(px, py)
+                        show_graph(self.matrix)
+                if command is not None:
                     pass
     def __reinit_properties(self):
         pass
