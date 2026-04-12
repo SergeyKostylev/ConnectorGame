@@ -8,7 +8,24 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 from app.services.DataMapGenerator import Generator
+from app.services.DataMapGeneratorV2 import GeneratorV2
+from app.services.helper import unsort_map
 import app.config as config
+import random as _random
+
+
+def random_rows():
+    return _random.randint(config.GENERATE_ROWS_MIN, config.GENERATE_ROWS_MAX)
+
+
+def random_cols():
+    return _random.randint(config.GENERATE_COLS_MIN, config.GENERATE_COLS_MAX)
+
+
+def random_batteries(rows, cols):
+    return max(1, round(rows * cols * config.GENERATE_BATTERIES_DENSITY))
+
+SHUFFLED_DIR = os.path.join("levels", "shuffled")
 
 LEVELS_DIR = "levels"
 
@@ -41,6 +58,22 @@ def save_yaml(data_map, name):
             lines.append(f"    type: {cell['type']}")
 
     path = os.path.join(LEVELS_DIR, f"{name}.yaml")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"Saved YAML: {path}")
+    return path
+
+
+def save_yaml_to(data_map, path):
+    lines = []
+    for i, row in enumerate(data_map):
+        lines.append(f"# row {i + 1}")
+        for j, cell in enumerate(row):
+            prefix = "- - " if j == 0 else "  - "
+            lines.append(f"{prefix}name: {cell['name']} # {i + 1}-{j + 1}")
+            lines.append(f"    rotation: {cell['rotation']}")
+            lines.append(f"    type: {cell['type']}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"Saved YAML: {path}")
@@ -110,14 +143,43 @@ def save_image(data_map, name):
 
 
 if __name__ == "__main__":
-    rows = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    cols = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    args = sys.argv[1:]
 
-    print(f"Generating {rows}x{cols} level...")
-    data_map = Generator().generate(rows, cols)
+    use_v2 = '--v2' in args
+    args = [a for a in args if a != '--v2']
+
+    batteries = None
+    if '--batteries' in args:
+        idx = args.index('--batteries')
+        batteries = int(args[idx + 1])
+        args = args[:idx] + args[idx + 2:]
+
+    shuffled = True
+    if '--shuffled' in args:
+        idx = args.index('--shuffled')
+        shuffled = args[idx + 1] != '0'
+        args = args[:idx] + args[idx + 2:]
+
+    rows = int(args[0]) if len(args) > 0 else random_rows()
+    cols = int(args[1]) if len(args) > 1 else random_cols()
+
+    version = 2 if use_v2 else 1
+    print(f"Generating {rows}x{cols} level (v{version})...")
+
+    if use_v2:
+        if batteries is None:
+            batteries = random_batteries(rows, cols)
+        data_map = GeneratorV2().generate(rows, cols, batteries=batteries)
+    else:
+        data_map = Generator().generate(rows, cols)
 
     os.makedirs(LEVELS_DIR, exist_ok=True)
     name = ask_filename()
 
     save_yaml(data_map, name)
     save_image(data_map, name)
+
+    if shuffled:
+        import copy
+        shuffled_map = unsort_map(copy.deepcopy(data_map))
+        save_yaml_to(shuffled_map, os.path.join(SHUFFLED_DIR, f"{name}.yaml"))
