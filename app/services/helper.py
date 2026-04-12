@@ -1,6 +1,5 @@
 import random
 
-import networkx as nx
 import matplotlib.pyplot as plt
 from app.config import MATRIX_DEFAULT_SIZE
 from app.models.Matrix import Matrix
@@ -54,13 +53,13 @@ def show_in_console(matrix: Matrix):
 
 def get_default_figure_map():
     # types: pipeline, battery, target
-    # data_map = [
-    #     [{'name': 'i', 'rotation': 90, 'type': 'target'}, {'name': 't', 'rotation': 180, 'type': 'pipeline'}, {'name': 'g', 'rotation': 180, 'type': 'pipeline'}],
-    #     [{'name': 'g', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 90, 'type': 'pipeline'}, {'name': 'l', 'rotation': 90, 'type': 'pipeline'}],
-    #     [{'name': 'i', 'rotation': 0, 'type': 'target'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}],
-    #     [{'name': 'g', 'rotation': 0, 'type': 'pipeline'}, {'name': 'x', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}],
-    #     [{'name': 'i', 'rotation': 0, 'type': 'target'}, {'name': 'i', 'rotation': 270, 'type': 'battery'}, {'name': 'i', 'rotation': 270, 'type': 'target'}],
-    # ]
+    data_map = [
+        [{'name': 'i', 'rotation': 90, 'type': 'target'}, {'name': 't', 'rotation': 180, 'type': 'pipeline'}, {'name': 'g', 'rotation': 180, 'type': 'pipeline'}],
+        [{'name': 'g', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 90, 'type': 'pipeline'}, {'name': 'l', 'rotation': 90, 'type': 'pipeline'}],
+        [{'name': 'i', 'rotation': 0, 'type': 'target'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}],
+        [{'name': 'g', 'rotation': 0, 'type': 'pipeline'}, {'name': 'x', 'rotation': 270, 'type': 'pipeline'}, {'name': 'g', 'rotation': 270, 'type': 'pipeline'}],
+        [{'name': 'i', 'rotation': 0, 'type': 'target'}, {'name': 'i', 'rotation': 270, 'type': 'battery'}, {'name': 'i', 'rotation': 270, 'type': 'target'}],
+    ]
 
     # data_map = [[{'name': 'i', 'rotation': 270, 'type': 'missing'}, {'name': 'l', 'rotation': 90, 'type': 'pipeline'},
     #   {'name': 't', 'rotation': 0, 'type': 'pipeline'}, {'name': 'i', 'rotation': 90, 'type': 'missing'},
@@ -81,13 +80,13 @@ def get_default_figure_map():
     #   {'name': 'g', 'rotation': 270, 'type': 'pipeline'}, {'name': 'i', 'rotation': 270, 'type': 'missing'},
     #   {'name': 't', 'rotation': 180, 'type': 'pipeline'}, {'name': 'i', 'rotation': 90, 'type': 'missing'}]]
 
-    data_map = Generator().generate(5, 5)
+    # data_map = Generator().generate(15, 10)
 
     # print(data_map)
     # exit()
 
 
-    return unsort_map(data_map)
+    # return unsort_map(data_map)
     return data_map
 
 

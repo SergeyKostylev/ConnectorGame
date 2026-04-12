@@ -13,8 +13,8 @@ class Generator:
         self.__all_shapes = self.__generate_all_shapes()
 
     def generate(self, rows = 3, columns= 3):
-        width = (rows - 1) * 3
-        height = (columns - 1) * 3
+        width = rows * (3 - 1)
+        height = columns * (3 - 1)
 
         return self.__maze_data_generator(width, height)
 
@@ -32,7 +32,6 @@ class Generator:
         maze = self.__insert_dynamic_zeros_or_twos(maze)
 
         blocks = self.__get_blocks(maze)
-
 
         for i, row_blocks in enumerate(blocks):
             row = []
