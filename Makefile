@@ -6,3 +6,9 @@ run:
 
 generate:
 	python generate.py $(ROWS) $(COLS)
+
+level-run:
+	python main.py $(filter-out $@,$(MAKECMDGOALS))
+
+%:
+	@:

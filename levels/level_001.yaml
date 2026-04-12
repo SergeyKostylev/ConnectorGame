@@ -1,0 +1,80 @@
+# row 1
+- - name: i # 1-1
+    rotation: 0
+    type: battery
+  - name: i # 1-2
+    rotation: 0
+    type: target
+  - name: i # 1-3
+    rotation: 0
+    type: target
+  - name: i # 1-4
+    rotation: 0
+    type: target
+  - name: i # 1-5
+    rotation: 0
+    type: target
+# row 2
+- - name: t # 2-1
+    rotation: 270
+    type: pipeline
+  - name: g # 2-2
+    rotation: 270
+    type: pipeline
+  - name: t # 2-3
+    rotation: 270
+    type: pipeline
+  - name: t # 2-4
+    rotation: 180
+    type: pipeline
+  - name: g # 2-5
+    rotation: 270
+    type: pipeline
+# row 3
+- - name: l # 3-1
+    rotation: 0
+    type: pipeline
+  - name: w # 3-2
+    rotation: 90
+    type: pipeline
+  - name: t # 3-3
+    rotation: 270
+    type: pipeline
+  - name: t # 3-4
+    rotation: 0
+    type: pipeline
+  - name: i # 3-5
+    rotation: 90
+    type: battery
+# row 4
+- - name: l # 4-1
+    rotation: 0
+    type: pipeline
+  - name: i # 4-2
+    rotation: 0
+    type: target
+  - name: i # 4-3
+    rotation: 180
+    type: target
+  - name: g # 4-4
+    rotation: 0
+    type: pipeline
+  - name: g # 4-5
+    rotation: 180
+    type: pipeline
+# row 5
+- - name: g # 5-1
+    rotation: 0
+    type: pipeline
+  - name: t # 5-2
+    rotation: 180
+    type: pipeline
+  - name: l # 5-3
+    rotation: 90
+    type: pipeline
+  - name: i # 5-4
+    rotation: 90
+    type: target
+  - name: i # 5-5
+    rotation: 180
+    type: target

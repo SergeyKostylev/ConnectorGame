@@ -1,5 +1,4 @@
 import sys
-import json
 import os
 import re
 import subprocess
@@ -18,7 +17,7 @@ def next_auto_name():
     os.makedirs(LEVELS_DIR, exist_ok=True)
     existing = [
         f for f in os.listdir(LEVELS_DIR)
-        if re.match(r"level_\d+\.json$", f)
+        if re.match(r"level_\d+\.yaml$", f)
     ]
     numbers = [int(re.search(r"\d+", f).group()) for f in existing]
     next_num = max(numbers) + 1 if numbers else 1
@@ -31,11 +30,20 @@ def ask_filename():
     return user_input if user_input else default
 
 
-def save_json(data_map, name):
-    path = os.path.join(LEVELS_DIR, f"{name}.json")
+def save_yaml(data_map, name):
+    lines = []
+    for i, row in enumerate(data_map):
+        lines.append(f"# row {i + 1}")
+        for j, cell in enumerate(row):
+            prefix = "- - " if j == 0 else "  - "
+            lines.append(f"{prefix}name: {cell['name']} # {i + 1}-{j + 1}")
+            lines.append(f"    rotation: {cell['rotation']}")
+            lines.append(f"    type: {cell['type']}")
+
+    path = os.path.join(LEVELS_DIR, f"{name}.yaml")
     with open(path, "w") as f:
-        json.dump(data_map, f, indent=2)
-    print(f"Saved JSON: {path}")
+        f.write("\n".join(lines) + "\n")
+    print(f"Saved YAML: {path}")
 
 
 def save_image(data_map, name):
@@ -111,5 +119,5 @@ if __name__ == "__main__":
     os.makedirs(LEVELS_DIR, exist_ok=True)
     name = ask_filename()
 
-    save_json(data_map, name)
+    save_yaml(data_map, name)
     save_image(data_map, name)
