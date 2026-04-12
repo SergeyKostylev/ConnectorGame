@@ -6,7 +6,7 @@ WALL = 0
 PASSAGE = 1
 
 def create_grid(width, height):
-    # Создаем полностью заполненное поле стенами
+    # create a grid fully filled with walls
     grid = np.zeros((height, width), dtype=int)
     return grid
 
@@ -46,11 +46,11 @@ def prim_maze(width, height):
 
 def draw_maze(grid):
     plt.figure(figsize=(10, 10))
-    plt.imshow(grid, cmap='binary')  # 'binary' = белый (1) и черный (0)
+    plt.imshow(grid, cmap='binary')  # 'binary' = white (1) and black (0)
     plt.axis('off')
     plt.show()
 
-# Пример использования
+# example usage
 def maze():
     maze = prim_maze(9, 9)
 
