@@ -41,14 +41,10 @@ def next_auto_name():
     return f"level_{next_num:03d}"
 
 
-def ask_filename():
-    default = next_auto_name()
-    user_input = input(f"Enter level name [{default}]: ").strip()
-    return user_input if user_input else default
 
 
 def save_yaml(data_map, name):
-    lines = []
+    lines = [f"# {len(data_map)}x{len(data_map[0])}"]
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
@@ -65,7 +61,7 @@ def save_yaml(data_map, name):
 
 
 def save_yaml_to(data_map, path):
-    lines = []
+    lines = [f"# {len(data_map)}x{len(data_map[0])}"]
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
@@ -146,7 +142,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
 
     use_v2 = '--v2' in args
-    args = [a for a in args if a != '--v2']
+    run = '--run' in args
+    args = [a for a in args if a not in ('--v2', '--run')]
 
     batteries = None
     if '--batteries' in args:
@@ -164,7 +161,16 @@ if __name__ == "__main__":
     cols = int(args[1]) if len(args) > 1 else random_cols()
 
     version = 2 if use_v2 else 1
-    print(f"Generating {rows}x{cols} level (v{version})...")
+    params = {
+        'command': 'generate-level',
+        'version': version,
+        'rows': rows,
+        'cols': cols,
+        'batteries': batteries if batteries is not None else 'random',
+        'shuffled': shuffled,
+        'run': run,
+    }
+    print("\n".join(f"  {k}: {v}" for k, v in params.items()) + "\n")
 
     if use_v2:
         if batteries is None:
@@ -174,12 +180,22 @@ if __name__ == "__main__":
         data_map = Generator().generate(rows, cols)
 
     os.makedirs(LEVELS_DIR, exist_ok=True)
-    name = ask_filename()
+    name = next_auto_name()
 
     save_yaml(data_map, name)
     save_image(data_map, name)
 
+    shuffled_path = None
     if shuffled:
         import copy
         shuffled_map = unsort_map(copy.deepcopy(data_map))
-        save_yaml_to(shuffled_map, os.path.join(SHUFFLED_DIR, f"{name}.yaml"))
+        shuffled_path = os.path.join(SHUFFLED_DIR, f"{name}.yaml")
+        save_yaml_to(shuffled_map, shuffled_path)
+
+    if run:
+        from app.pygame import App
+        from app.models.Matrix import Matrix
+        import yaml
+        run_path = shuffled_path if shuffled_path else os.path.join(LEVELS_DIR, f"{name}.yaml")
+        with open(run_path) as f:
+            App(Matrix(frame_map_data=yaml.safe_load(f))).run()

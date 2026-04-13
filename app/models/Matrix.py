@@ -15,7 +15,6 @@ class Matrix(GraphHelper):
     def __fill_frame_map(self, frame_map_data):
         """ one element: {'name': 'g', 'rotation': 0, 'type': 'pipeline'}"""
         self.frames_map = [[0] * len(frame_map_data[0]) for _ in range(len(frame_map_data))]
-        print(self.frames_map)
         for i, j in self.iterate_shape():
             f_data = frame_map_data[i][j]
             mf = MatrixFrame(f_data['name'], f_data['rotation'], f_data['type'])

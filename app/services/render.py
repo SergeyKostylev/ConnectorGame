@@ -23,7 +23,6 @@ class Render:
 
         self.matrix = matrix
         self.cursor = cursor
-        print(self.grid)
 
     def __set_grid(self, matrix: Matrix):
         for i, j in matrix.iterate_shape():
