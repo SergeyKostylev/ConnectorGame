@@ -9,6 +9,7 @@ import matplotlib.patches as patches
 
 from app.services.DataMapGenerator import Generator
 from app.services.DataMapGeneratorV2 import GeneratorV2
+from app.services.DataMapGeneratorV3 import GeneratorV3
 from app.services.helper import unsort_map
 import app.config as config
 import random as _random
@@ -43,8 +44,23 @@ def next_auto_name():
 
 
 
-def save_yaml(data_map, name):
+def stats_comments(data_map, version):
+    counts = {}
+    for row in data_map:
+        for cell in row:
+            t = cell['type']
+            counts[t] = counts.get(t, 0) + 1
+    total = sum(counts.values())
+    lines = [f"# generator: v{version}"]
+    for t in ['battery', 'target', 'pipeline', 'missing']:
+        c = counts.get(t, 0)
+        lines.append(f"# {t}: {c} ({c / total * 100:.1f}%)")
+    return lines
+
+
+def save_yaml(data_map, name, version):
     lines = [f"# {len(data_map)}x{len(data_map[0])}"]
+    lines += stats_comments(data_map, version)
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
@@ -60,8 +76,9 @@ def save_yaml(data_map, name):
     return path
 
 
-def save_yaml_to(data_map, path):
+def save_yaml_to(data_map, path, version):
     lines = [f"# {len(data_map)}x{len(data_map[0])}"]
+    lines += stats_comments(data_map, version)
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
@@ -138,41 +155,95 @@ def save_image(data_map, name):
     subprocess.run(["open", path])
 
 
+VERSION_FLAGS = {
+    1: set(),
+    2: {'batteries', 'shuffled', 'run'},
+    3: {'batteries', 'shuffled', 'run', 'targets-percent'},
+}
+
+
+def parse_args(args):
+    parsed = {}
+
+    # key=value та boolean флаги
+    kv = {}
+    bools = set()
+    positional = []
+    for a in args:
+        if '=' in a:
+            k, v = a.split('=', 1)
+            kv[k] = v
+        elif a in ('v2', 'v3', 'run'):
+            bools.add(a)
+        else:
+            positional.append(a)
+
+    parsed['version'] = 3 if 'v3' in bools else (2 if 'v2' in bools else 1)
+    parsed['run'] = 'run' in bools
+    parsed['batteries'] = int(kv['batteries']) if 'batteries' in kv else None
+    parsed['targets_percent'] = float(kv['targets-percent']) if 'targets-percent' in kv else None
+    parsed['shuffled'] = kv.get('shuffled', '1') != '0'
+    parsed['rows'] = int(positional[0]) if len(positional) > 0 else None
+    parsed['cols'] = int(positional[1]) if len(positional) > 1 else None
+
+    return parsed
+
+
+def validate_args(parsed):
+    version = parsed['version']
+    supported = VERSION_FLAGS[version]
+    unsupported = []
+
+    if parsed['batteries'] is not None and 'batteries' not in supported:
+        unsupported.append('batteries')
+    if not parsed['shuffled'] and 'shuffled' not in supported:
+        unsupported.append('shuffled')
+    if parsed['run'] and 'run' not in supported:
+        unsupported.append('run')
+    if parsed['targets_percent'] is not None and 'targets-percent' not in supported:
+        unsupported.append('targets-percent')
+
+    if unsupported:
+        print(f"Error: v{version} does not support: {', '.join(unsupported)}")
+        sys.exit(1)
+
+    if parsed['targets_percent'] is not None and not (0 < parsed['targets_percent'] < 100):
+        print(f"Error: targets-percent must be between 0 and 100 (got {parsed['targets_percent']})")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    parsed = parse_args(sys.argv[1:])
+    validate_args(parsed)
 
-    use_v2 = '--v2' in args
-    run = '--run' in args
-    args = [a for a in args if a not in ('--v2', '--run')]
+    version = parsed['version']
+    rows = parsed['rows'] or random_rows()
+    cols = parsed['cols'] or random_cols()
+    batteries = parsed['batteries']
+    shuffled = parsed['shuffled']
+    run = parsed['run']
+    targets_percent = parsed['targets_percent']
 
-    batteries = None
-    if '--batteries' in args:
-        idx = args.index('--batteries')
-        batteries = int(args[idx + 1])
-        args = args[:idx] + args[idx + 2:]
-
-    shuffled = True
-    if '--shuffled' in args:
-        idx = args.index('--shuffled')
-        shuffled = args[idx + 1] != '0'
-        args = args[:idx] + args[idx + 2:]
-
-    rows = int(args[0]) if len(args) > 0 else random_rows()
-    cols = int(args[1]) if len(args) > 1 else random_cols()
-
-    version = 2 if use_v2 else 1
     params = {
         'command': 'generate-level',
         'version': version,
         'rows': rows,
         'cols': cols,
         'batteries': batteries if batteries is not None else 'random',
+        'targets_percent': f'{targets_percent}%' if targets_percent is not None else 'default',
         'shuffled': shuffled,
         'run': run,
     }
+    if version != 3:
+        del params['targets_percent']
     print("\n".join(f"  {k}: {v}" for k, v in params.items()) + "\n")
 
-    if use_v2:
+    if version == 3:
+        if batteries is None:
+            batteries = random_batteries(rows, cols)
+        target_limit = round(rows * cols * targets_percent / 100) if targets_percent is not None else None
+        data_map = GeneratorV3().generate(rows, cols, batteries=batteries, target_limit=target_limit)
+    elif version == 2:
         if batteries is None:
             batteries = random_batteries(rows, cols)
         data_map = GeneratorV2().generate(rows, cols, batteries=batteries)
@@ -182,7 +253,7 @@ if __name__ == "__main__":
     os.makedirs(LEVELS_DIR, exist_ok=True)
     name = next_auto_name()
 
-    save_yaml(data_map, name)
+    save_yaml(data_map, name, version)
     save_image(data_map, name)
 
     shuffled_path = None
@@ -190,7 +261,7 @@ if __name__ == "__main__":
         import copy
         shuffled_map = unsort_map(copy.deepcopy(data_map))
         shuffled_path = os.path.join(SHUFFLED_DIR, f"{name}.yaml")
-        save_yaml_to(shuffled_map, shuffled_path)
+        save_yaml_to(shuffled_map, shuffled_path, version)
 
     if run:
         from app.pygame import App

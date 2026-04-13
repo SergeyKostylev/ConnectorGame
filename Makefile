@@ -3,20 +3,30 @@
 run-default:
 	python main.py
 
-# [deprecated] Generate a v1 level (pipeline/missing only, no battery or target)
-# make generate-deprecated ROWS=4 COLS=6
-generate-deprecated:
-	python generate.py $(or $(ROWS),5) $(or $(COLS),5)
+# Generate a v1 level (pipeline/missing only, no battery or target)
+# Params: rows, cols
+# make generate-level-v1
+# make generate-level-v1 rows=4 cols=6
+generate-level-v1:
+	python generate.py $(if $(rows),$(rows),) $(if $(cols),$(cols),)
 
-# Generate a new level: saves yaml + png to levels/, also creates shuffled version in levels/shuffled/ by default
-# Params: ROWS, COLS, BATTERIES, SHUFFLED=0 to skip shuffled, RUN=1 to launch after generation (shuffled if created, otherwise original)
-# make generate-level
-# make generate-level ROWS=4 COLS=6
-# make generate-level ROWS=5 COLS=5 BATTERIES=3 SHUFFLED=0
-# make generate-level RUN=1
-# make generate-level ROWS=5 COLS=5 SHUFFLED=0 RUN=1
-generate-level:
-	python generate.py --v2 $(if $(ROWS),$(ROWS),) $(if $(COLS),$(COLS),) $(if $(BATTERIES),--batteries $(BATTERIES),) $(if $(SHUFFLED),--shuffled $(SHUFFLED),) $(if $(RUN),--run,)
+# Generate a v2 level: saves yaml + png to levels/, shuffled version in levels/shuffled/ by default
+# Params: rows, cols, batteries=3, shuffled=0 (1 за замовчуванням), run=1 (0 за замовчуванням)
+# make generate-level-v2
+# make generate-level-v2 rows=4 cols=6
+# make generate-level-v2 rows=5 cols=5 batteries=3 shuffled=0
+# make generate-level-v2 run=1
+generate-level-v2:
+	python generate.py v2 $(if $(rows),$(rows),) $(if $(cols),$(cols),) $(if $(batteries),batteries=$(batteries),) $(if $(shuffled),shuffled=$(shuffled),) $(if $(run),run,)
+
+# Generate a v3 level: like v2 but with controlled targets_percent (лампочки)
+# Params: rows, cols, batteries=3, targets_percent=15, shuffled=0 (1 за замовчуванням), run=1 (0 за замовчуванням)
+# make generate-level-v3
+# make generate-level-v3 rows=4 cols=6
+# make generate-level-v3 rows=5 cols=5 batteries=3 targets_percent=10
+# make generate-level-v3 targets_percent=5 run=1
+generate-level-v3:
+	python generate.py v3 $(if $(rows),$(rows),) $(if $(cols),$(cols),) $(if $(batteries),batteries=$(batteries),) $(if $(targets_percent),targets-percent=$(targets_percent),) $(if $(shuffled),shuffled=$(shuffled),) $(if $(run),run,)
 
 # Run a specific level from levels/. If no name given — runs the latest
 # make level-run
@@ -34,7 +44,7 @@ level-run-shuffled:
 	python main.py --shuffled $(filter-out $@,$(MAKECMDGOALS))
 
 help:
-	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile
+	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z0-9_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile
 
 %:
 	@:
