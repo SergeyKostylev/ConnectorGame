@@ -1,5 +1,6 @@
 import sys
 import os
+import copy
 import yaml
 from app.pygame import App
 from app.services.helper import *
@@ -45,6 +46,32 @@ def resolve_path(arg, folder):
     return os.path.join(folder, f"level_{int(arg):03d}.yaml") if arg.isdigit() else arg
 
 
+def ensure_shuffled(path):
+    """If shuffled level doesn't exist, create it from original."""
+    if os.path.exists(path):
+        return path
+    name = os.path.basename(path)
+    original = os.path.join(LEVELS_DIR, name)
+    if not os.path.exists(original):
+        print(f"Level not found: {path} (original {original} also missing)")
+        sys.exit(1)
+    with open(original) as f:
+        data_map = yaml.safe_load(f)
+    unsort_map(copy.deepcopy(data_map))
+    os.makedirs(SHUFFLED_DIR, exist_ok=True)
+    from generate import save_yaml_to
+    # detect version from original comments
+    with open(original) as f:
+        first_lines = f.read()
+    version = 0
+    for line in first_lines.splitlines():
+        if line.startswith('# generator: v'):
+            version = int(line.split('v')[1])
+            break
+    save_yaml_to(unsort_map(data_map), path, version)
+    return path
+
+
 def load_level(path):
     if not os.path.exists(path):
         print(f"Level not found: {path}")
@@ -70,9 +97,20 @@ if __name__ == '__main__':
         run_py_game(Generator().generate(rows, cols))
     elif len(args) == 1:
         path = resolve_path(args[0], folder)
+        if shuffled:
+            path = ensure_shuffled(path)
         log({'command': 'level-run', 'file': path, 'shuffled': shuffled})
         run_py_game(load_level(path))
     elif len(args) == 0:
-        path = find_latest(folder)
+        if shuffled:
+            # try latest from shuffled, fallback to latest original
+            originals = sorted(f for f in os.listdir(LEVELS_DIR) if f.endswith('.yaml'))
+            if originals:
+                path = os.path.join(SHUFFLED_DIR, originals[-1])
+                path = ensure_shuffled(path)
+            else:
+                path = find_latest(folder)
+        else:
+            path = find_latest(folder)
         log({'command': 'level-run', 'file': path, 'shuffled': shuffled, 'mode': 'latest'})
         run_py_game(load_level(path))
