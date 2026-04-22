@@ -33,16 +33,18 @@ class AppEditor(App):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                self._context_menu.handle_hover(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 3:
                     self._right_click_tile = (event.pos[1] // MF_SIZE, event.pos[0] // MF_SIZE)
                     self._context_menu.show(*event.pos)
                 elif event.button == 1:
-                    selected = self._context_menu.handle_click(event.pos)
-                    if selected is not None and self._right_click_tile is not None:
-                        self.on_menu_select(selected, self._right_click_tile)
+                    item = self._context_menu.handle_click(event.pos)
+                    if item is not None and self._right_click_tile is not None:
+                        self.on_menu_select(item, self._right_click_tile)
 
-    def on_menu_select(self, item_index, tile_pos):
+    def on_menu_select(self, item, tile_pos):
+        name, rotation, frame_type = item
         row, col = tile_pos
-        from app.editor.context_menu import ITEMS
-        print(f"  menu: {ITEMS[item_index]}, tile: ({row}, {col})")
+        self.matrix.replace_frame(row, col, name, rotation, frame_type)

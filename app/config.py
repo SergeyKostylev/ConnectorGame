@@ -1,5 +1,6 @@
 MATRIX_DEFAULT_SIZE = (3, 5)
 MATRIX_FRAME_RENDER_SIZE = 50
+EDITOR_MENU_CELL_SIZE = 33
 
 frames = {
     "g": [[0, 1, 0],

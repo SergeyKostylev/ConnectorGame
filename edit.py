@@ -3,7 +3,7 @@ import os
 import yaml
 
 from app.editor.app_editor import AppEditor
-from app.models.Matrix import Matrix
+from app.editor.matrix_editor import MatrixEditor
 
 LEVELS_DIR = "levels"
 
@@ -33,4 +33,4 @@ if __name__ == '__main__':
     path = resolve_path(args[0]) if args else find_latest()
     data_map = load_level(path)
     print(f"  command: edit\n  file: {path}\n")
-    AppEditor(Matrix(frame_map_data=data_map)).run()
+    AppEditor(MatrixEditor(frame_map_data=data_map)).run()
