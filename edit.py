@@ -28,9 +28,18 @@ def load_level(path):
         return yaml.safe_load(f)
 
 
+def read_version(path):
+    with open(path) as f:
+        for line in f:
+            if line.startswith('# generator: v'):
+                return int(line.split('v')[1].strip())
+    return 3
+
+
 if __name__ == '__main__':
     args = sys.argv[1:]
     path = resolve_path(args[0]) if args else find_latest()
     data_map = load_level(path)
+    version = read_version(path)
     print(f"  command: edit\n  file: {path}\n")
-    AppEditor(MatrixEditor(frame_map_data=data_map)).run()
+    AppEditor(MatrixEditor(frame_map_data=data_map), file_path=path, version=version).run()

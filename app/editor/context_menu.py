@@ -25,30 +25,42 @@ def _path(name, rotation, frame_type):
 COLUMNS = [
     {
         'title': 'Pipeline',
-        'grid_cols': 4,
-        'items': (
-            [('g', r, 'pipeline') for r in [0, 90, 180, 270]] +
-            [('l', r, 'pipeline') for r in [0, 90]] +
-            [('t', r, 'pipeline') for r in [0, 90, 180, 270]] +
-            [('x', r, 'pipeline') for r in [0]]
-        ),
+        'rows': [
+            [('g', r, 'pipeline') for r in [0, 90, 180, 270]],
+            [('l', r, 'pipeline') for r in [0, 90]],
+            [('t', r, 'pipeline') for r in [0, 90, 180, 270]],
+            [('x', r, 'pipeline') for r in [0]],
+        ],
     },
     {
         'title': 'Target',
-        'grid_cols': 1,
-        'items': [('i', r, 'target') for r in [0, 90, 180, 270]],
+        'rows': [
+            [('i', r, 'target') for r in [0]],
+            [('i', r, 'target') for r in [90]],
+            [('i', r, 'target') for r in [180]],
+            [('i', r, 'target') for r in [270]],
+        ],
     },
     {
         'title': 'Battery',
-        'grid_cols': 1,
-        'items': [('i', r, 'battery') for r in [0, 90, 180, 270]],
+        'rows': [
+            [('i', r, 'battery') for r in [0]],
+            [('i', r, 'battery') for r in [90]],
+            [('i', r, 'battery') for r in [180]],
+            [('i', r, 'battery') for r in [270]],
+        ],
     },
     {
         'title': 'Wall',
-        'grid_cols': 1,
-        'items': [('w', 0, 'pipeline')],
+        'rows': [
+            [('w', 0, 'pipeline')],
+        ],
     },
 ]
+
+
+def _col_width(col):
+    return max(len(row) for row in col['rows'])
 
 
 class ContextMenu:
@@ -65,10 +77,8 @@ class ContextMenu:
         w = PAD * 2 - COL_GAP
         max_rows = 0
         for col in COLUMNS:
-            gc = col['grid_cols']
-            rows = (len(col['items']) + gc - 1) // gc
-            max_rows = max(max_rows, rows)
-            w += gc * CELL + COL_GAP
+            max_rows = max(max_rows, len(col['rows']))
+            w += _col_width(col) * CELL + COL_GAP
         h = PAD * 2 + HEADER_H + max_rows * CELL
         return w, h
 
@@ -98,13 +108,13 @@ class ContextMenu:
         self._rects = []
         cx = self.x + PAD
         for col in COLUMNS:
-            gc = col['grid_cols']
             cy = self.y + PAD + HEADER_H
-            for idx, item in enumerate(col['items']):
-                rx = cx + (idx % gc) * CELL
-                ry = cy + (idx // gc) * CELL
-                self._rects.append((pygame.Rect(rx, ry, CELL - 2, CELL - 2), item))
-            cx += gc * CELL + COL_GAP
+            for row in col['rows']:
+                for col_idx, item in enumerate(row):
+                    rx = cx + col_idx * CELL
+                    self._rects.append((pygame.Rect(rx, cy, CELL - 2, CELL - 2), item))
+                cy += CELL
+            cx += _col_width(col) * CELL + COL_GAP
 
     def _texture(self, name, rotation, frame_type):
         path = _path(name, rotation, frame_type)
@@ -146,12 +156,10 @@ class ContextMenu:
 
         font = self._font_get()
         cx = self.x + PAD
-        col_idx_offset = 0
+        global_idx = 0
 
         for col in COLUMNS:
-            gc = col['grid_cols']
-            items = col['items']
-            col_w = gc * CELL
+            col_w = _col_width(col) * CELL
 
             pygame.draw.rect(surface, HEADER_BG, (cx, self.y + PAD, col_w, HEADER_H))
             txt = font.render(col['title'], True, HEADER_FG)
@@ -159,15 +167,16 @@ class ContextMenu:
                                self.y + PAD + (HEADER_H - txt.get_height()) // 2))
 
             cy = self.y + PAD + HEADER_H
-            for local_idx, (name, rotation, frame_type) in enumerate(items):
-                global_idx = col_idx_offset + local_idx
-                rect = self._rects[global_idx][0]
-                bg = HOVER_BG if self._hovered == global_idx else CELL_BG
-                pygame.draw.rect(surface, bg, rect)
-                tex = self._texture(name, rotation, frame_type)
-                if tex:
-                    surface.blit(tex, (rect.x + 1, rect.y + 1))
-                pygame.draw.rect(surface, BORDER, rect, 1)
+            for row in col['rows']:
+                for col_idx, (name, rotation, frame_type) in enumerate(row):
+                    rect = self._rects[global_idx][0]
+                    bg = HOVER_BG if self._hovered == global_idx else CELL_BG
+                    pygame.draw.rect(surface, bg, rect)
+                    tex = self._texture(name, rotation, frame_type)
+                    if tex:
+                        surface.blit(tex, (rect.x + 1, rect.y + 1))
+                    pygame.draw.rect(surface, BORDER, rect, 1)
+                    global_idx += 1
+                cy += CELL
 
-            col_idx_offset += len(items)
             cx += col_w + COL_GAP
