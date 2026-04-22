@@ -51,16 +51,18 @@ def stats_comments(data_map, version):
             t = cell['type']
             counts[t] = counts.get(t, 0) + 1
     total = sum(counts.values())
-    lines = [f"# generator: v{version}"]
-    for t in ['battery', 'target', 'pipeline', 'missing']:
+    lines = [
+        f"# generator: v{version}",
+        f"# size: {len(data_map)}x{len(data_map[0])}",
+    ]
+    for t in ['battery', 'target', 'pipeline']:
         c = counts.get(t, 0)
         lines.append(f"# {t}: {c} ({c / total * 100:.1f}%)")
     return lines
 
 
 def save_yaml(data_map, name, version):
-    lines = [f"# {len(data_map)}x{len(data_map[0])}"]
-    lines += stats_comments(data_map, version)
+    lines = stats_comments(data_map, version)
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
@@ -77,8 +79,7 @@ def save_yaml(data_map, name, version):
 
 
 def save_yaml_to(data_map, path, version):
-    lines = [f"# {len(data_map)}x{len(data_map[0])}"]
-    lines += stats_comments(data_map, version)
+    lines = stats_comments(data_map, version)
     for i, row in enumerate(data_map):
         lines.append(f"# row {i + 1}")
         for j, cell in enumerate(row):
