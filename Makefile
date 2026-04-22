@@ -43,6 +43,12 @@ level-run:
 level-run-shuffled:
 	python main.py --shuffled $(filter-out $@,$(MAKECMDGOALS))
 
+# Edit a level. If no number given — edits the latest
+# make edit
+# make edit 1
+edit:
+	python edit.py $(filter-out $@,$(MAKECMDGOALS))
+
 help:
 	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z0-9_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile
 
