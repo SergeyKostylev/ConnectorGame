@@ -245,15 +245,13 @@ class LevelListPanel:
 
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            for r, li in self._edit_rects:
-                if r.collidepoint(event.pos):
-                    self.editing = li
-                    if self._on_edit:
-                        self._on_edit(self._levels[li]['name'])
-                    return
             for r, li in self._rects:
                 if r.collidepoint(event.pos):
                     self.selected = li
+                    self.editing  = li
+                    if self._on_edit:
+                        self._on_edit(self._levels[li]['name'])
+                    return
         elif event.type == pygame.MOUSEWHEEL:
             max_scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll = max(0, min(max_scroll, self._scroll - event.y * 20))
@@ -268,17 +266,14 @@ class LevelListPanel:
         pygame.draw.rect(surf, INPUT_BG, (x, y, w, h), border_radius=4)
         pygame.draw.rect(surf, BOR,      (x, y, w, h), 1, border_radius=4)
 
-        self._list_h      = h - 2
-        self._rects       = []
-        self._edit_rects  = []
+        self._list_h = h - 2
+        self._rects  = []
         clip = surf.get_clip()
         surf.set_clip(pygame.Rect(x + 1, y + 1, list_w, h - 2))
 
-        mouse  = pygame.mouse.get_pos()
-        ih     = self.ITEM_H
-        pad    = 8
-        btn_w  = 36
-        btn_h  = 18
+        mouse = pygame.mouse.get_pos()
+        ih    = self.ITEM_H
+        pad   = 8
 
         for li, entry in enumerate(self._levels):
             ry = y + 1 + li * ih - self._scroll
@@ -296,17 +291,6 @@ class LevelListPanel:
             else:
                 bg = INPUT_BG
             pygame.draw.rect(surf, bg, r)
-
-            # edit button (top-right)
-            eb = pygame.Rect(r.right - btn_w - pad, ry + pad, btn_w, btn_h)
-            self._edit_rects.append((eb, li))
-            eb_hov = eb.collidepoint(mouse)
-            eb_sel = li == self.editing
-            eb_col = BTN_HOV if (eb_hov or eb_sel) else BTN_BG
-            pygame.draw.rect(surf, eb_col, eb, border_radius=3)
-            et = self._font_sm.render("Edit", True, FG)
-            surf.blit(et, (eb.centerx - et.get_width() // 2,
-                           eb.centery - et.get_height() // 2))
 
             # name
             ty = ry + pad
@@ -381,14 +365,37 @@ class InlineEditor:
         self._context_menu    = ContextMenu()
         self._right_click_tile = None
 
-        ew, eh = shape[1] * MF_SIZE, shape[0] * MF_SIZE + MENU_H
+        ew, eh = shape[1] * MF_SIZE, shape[0] * MF_SIZE
         self._surf   = pygame.Surface((ew, eh))
-        self._render = RenderEditor(matrix, self._cursor, surface=self._surf)
+        self._render = RenderEditor(matrix, self._cursor, surface=self._surf, show_menu=False)
 
-        self._saved_state = self._snapshot()
+        self._MENU_H  = 0  # no top menu in inline mode
+        self._saved_state   = self._snapshot()
+        self._original_meta = self._compute_meta()
         self._ox = 0   # screen offset, updated in draw()
         self._oy = 0
         self._scale = 1.0
+
+    def _compute_meta(self):
+        counts = {'battery': 0, 'target': 0, 'pipeline': 0, 'wall': 0}
+        total  = sum(len(row) for row in self._matrix.frames_map)
+        for row in self._matrix.frames_map:
+            for f in row:
+                if f.name == 'w':       counts['wall']     += 1
+                elif f.is_battery():    counts['battery']  += 1
+                elif f.is_target():     counts['target']   += 1
+                else:                   counts['pipeline'] += 1
+        shape = self._matrix.get_shape()
+        def fmt(k):
+            c = counts[k]
+            return f"{c} ({c / total * 100:.1f}%)"
+        return {
+            'size':     f"{shape[0]}x{shape[1]}",
+            'battery':  fmt('battery'),
+            'target':   fmt('target'),
+            'pipeline': fmt('pipeline'),
+            'wall':     fmt('wall'),
+        }
 
     def _snapshot(self):
         return tuple(
@@ -404,16 +411,10 @@ class InlineEditor:
     def handle(self, event):
         # context menu uses screen coords; tiles use editor-local coords
         if event.type == pygame.MOUSEMOTION:
-            tp = self._translate(event.pos)
             self._context_menu.handle_hover(event.pos)   # screen coords
-            self._render.top_menu.handle_hover(tp)
         elif event.type == pygame.MOUSEBUTTONDOWN:
             tp = self._translate(event.pos)
             if event.button == 1:
-                action = self._render.top_menu.handle_click(tp)
-                if action == 'save':
-                    self.save()
-                    return
                 if self._context_menu.visible:
                     item = self._context_menu.handle_click(event.pos)  # screen coords
                     if item is not None and self._right_click_tile is not None:
@@ -489,10 +490,14 @@ class Launcher:
         pygame.display.set_caption("ConnectorGame")
         self.font     = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 15)
         self.font_h   = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 19)
+        self._font_sm    = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 12)
+        self._meta_icons = {}
         self.status         = ""
         self._busy          = False
         self._sel           = 0
         self._inline_editor = None
+        self._save_rect     = pygame.Rect(0, 0, 0, 0)
+        self._save_hov      = False
         self._actions       = self._build_actions()
         self._load_prefs()
 
@@ -612,6 +617,46 @@ class Launcher:
         self.status = "Running…"
         threading.Thread(target=self._actions[self._sel].run_fn, daemon=True).start()
 
+    def _get_icon(self, path, size):
+        key = (path, size)
+        if key not in self._meta_icons:
+            try:
+                img = pygame.image.load(path).convert()
+                self._meta_icons[key] = pygame.transform.scale(img, (size, size))
+            except Exception:
+                self._meta_icons[key] = None
+        return self._meta_icons[key]
+
+    def _draw_meta_line(self, font, label, meta, x, y, color):
+        icon_sz = font.size("A")[1]
+        cx = x
+        # label
+        t = font.render(label, True, color)
+        self.screen.blit(t, (cx, y)); cx += t.get_width() + 6
+        # size (text only)
+        t = font.render(f"size: {meta['size']}  ", True, color)
+        self.screen.blit(t, (cx, y)); cx += t.get_width()
+        # fields: (icon_path_or_None, fallback_text, value, gap_after)
+        fields = [
+            ("src/target/off_0.jpg",  "bat:",      meta['battery'],  "  "),
+            ("src/battery/bat_270.jpg", "battery:", meta['target'],   "  "),
+            ("src/l180.jpg",          "pipeline:", meta['pipeline'], "  "),
+            (None,                    "wall:",     meta['wall'],     ""),
+        ]
+        for icon_path, fallback, value, gap in fields:
+            if icon_path:
+                icon = self._get_icon(icon_path, icon_sz)
+                if icon:
+                    self.screen.blit(icon, (cx, y)); cx += icon_sz + 2
+                else:
+                    t = font.render(fallback, True, color)
+                    self.screen.blit(t, (cx, y)); cx += t.get_width() + 2
+            else:
+                t = font.render(fallback, True, color)
+                self.screen.blit(t, (cx, y)); cx += t.get_width() + 2
+            t = font.render(value + gap, True, color)
+            self.screen.blit(t, (cx, y)); cx += t.get_width()
+
     # ── drawing ───────────────────────────────────────────────────────────────
 
     def _draw(self, nav_hov, run_hov):
@@ -663,10 +708,34 @@ class Launcher:
             pygame.draw.line(self.screen, SEP,
                              (sep_x, HEADER_H + PAD),
                              (sep_x, sh - STATUS_H - PAD))
-            # right detail column — inline editor
+            # right detail column — save button + inline editor
             if self._inline_editor is not None:
+                has_changes = self._inline_editor._snapshot() != self._inline_editor._saved_state
+                if has_changes:
+                    save_col = BTN_HOV if self._save_hov else BTN_BG
+                    save_fg  = FG
+                else:
+                    save_col = BTN_DIS
+                    save_fg  = FG_DIS
+                self._save_rect = pygame.Rect(detail_x, HEADER_H + PAD, 70, RUN_H)
+                pygame.draw.rect(self.screen, save_col, self._save_rect, border_radius=6)
+                st = self.font.render("Save", True, save_fg)
+                self.screen.blit(st, (self._save_rect.centerx - st.get_width() // 2,
+                                      self._save_rect.centery - st.get_height() // 2))
+
+                # meta comparison: before / new
+                mx  = self._save_rect.right + PAD
+                fnt = self._font_sm
+                lh  = fnt.size("A")[1]
+                by0 = self._save_rect.y + (RUN_H - lh * 2 - 2) // 2
+                self._draw_meta_line(fnt, "before:", self._inline_editor._original_meta,
+                                     mx, by0, FG_DIM)
+                self._draw_meta_line(fnt, "new:    ", self._inline_editor._compute_meta(),
+                                     mx, by0 + lh + 2, FG if has_changes else FG_DIM)
+                editor_y = HEADER_H + PAD + RUN_H + PAD
                 self._inline_editor.draw(
-                    self.screen, detail_x, HEADER_H + PAD, detail_w, content_h_inner
+                    self.screen, detail_x, editor_y, detail_w,
+                    sh - STATUS_H - editor_y - PAD
                 )
         else:
             # right panel — params (fixed-width, centred horizontally)
@@ -736,6 +805,7 @@ class Launcher:
                     nav_hov = next((i for i, r in enumerate(nav_rects)
                                     if r.collidepoint(pos)), -1)
                     run_hov = run_rect.collidepoint(pos)
+                    self._save_hov = self._save_rect.collidepoint(pos)
                     for _, w in cur_action.inputs:
                         w.handle(event)
                     if self._inline_editor and cur_action.panel:
@@ -758,7 +828,14 @@ class Launcher:
                         if cur_action.panel:
                             cur_action.panel.handle(event)
                             if self._inline_editor:
-                                self._inline_editor.handle(event)
+                                if self._save_rect.collidepoint(pos) and \
+                                        self._inline_editor._snapshot() != self._inline_editor._saved_state:
+                                    self._inline_editor.save()
+                                    self._inline_editor._original_meta = self._inline_editor._compute_meta()
+                                    cur_action.panel._refresh()
+                                    self.status = f"Saved: {self._inline_editor._file_path}"
+                                else:
+                                    self._inline_editor.handle(event)
                         elif run_rect.collidepoint(pos):
                             self._run_selected()
                             continue
