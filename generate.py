@@ -132,12 +132,13 @@ def save_level_to(meet_map, shuffled_map, path, version):
     print(f"Saved: {path}")
 
 
-def _tile_path(cell):
+def _tile_path(cell, connected=False):
     t, n, r = cell['type'], cell['name'], cell['rotation']
     if t == 'battery':
         return f"./src/battery/bat_{r}.jpg"
     if t == 'target':
-        return f"./src/target/off_{r}.jpg"
+        off_on = 'on' if connected else 'off'
+        return f"./src/target/{off_on}_{r}.jpg"
     return f"./src/{n}{r}.jpg"
 
 
@@ -145,6 +146,9 @@ _tile_cache: dict = {}
 
 
 def save_image(data_map, name):
+    from app.models.Matrix import Matrix
+    matrix = Matrix(frame_map_data=data_map)
+
     tile_px = config.MATRIX_FRAME_RENDER_SIZE
     rows, cols = len(data_map), len(data_map[0])
     img = Image.new('RGB', (cols * tile_px, rows * tile_px))
@@ -152,7 +156,8 @@ def save_image(data_map, name):
     draw = ImageDraw.Draw(img)
     for i, row in enumerate(data_map):
         for j, cell in enumerate(row):
-            path = _tile_path(cell)
+            connected = matrix.is_connected_to_battery(i, j)
+            path = _tile_path(cell, connected=connected)
             if path not in _tile_cache:
                 _tile_cache[path] = Image.open(path).convert('RGB').resize(
                     (tile_px, tile_px), Image.LANCZOS

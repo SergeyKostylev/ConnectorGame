@@ -408,7 +408,7 @@ class ConfirmDialog:
 # ── inline editor ─────────────────────────────────────────────────────────────
 
 class InlineEditor:
-    def __init__(self, data_map, file_path, version, on_tile_changed=None):
+    def __init__(self, data_map, file_path, version, shuffled_data=None, on_tile_changed=None):
         from app.models.Matrix import Matrix
         from app.services.render import Cursor, MF_SIZE
         from app.editor.render_editor import RenderEditor
@@ -433,6 +433,7 @@ class InlineEditor:
 
         self._MENU_H        = 0  # no top menu in inline mode
         self._on_tile_changed = on_tile_changed
+        self._shuffled_data = [list(row) for row in shuffled_data] if shuffled_data else []
         self._saved_state   = self._snapshot()
         self._original_meta = self._compute_meta()
         self._ox = 0   # screen offset, updated in draw()
@@ -466,6 +467,11 @@ class InlineEditor:
              'battery' if f.is_battery() else 'target' if f.is_target() else 'pipeline')
             for row in self._matrix.frames_map for f in row
         )
+
+    def update_shuffled_tile(self, r, c, name, frame_type):
+        if self._shuffled_data and r < len(self._shuffled_data) and c < len(self._shuffled_data[r]):
+            self._shuffled_data[r][c]['name'] = name
+            self._shuffled_data[r][c]['type'] = frame_type
 
     def _translate(self, pos):
         return (int((pos[0] - self._ox) / self._scale),
@@ -521,21 +527,11 @@ class InlineEditor:
         self._context_menu.draw(dest)
 
     def save(self):
-        if self._snapshot() == self._saved_state or self._file_path is None:
+        if self._file_path is None:
             return
-        import copy, re, shutil
-        from generate import save_level_to
+        import copy
+        from generate import save_level_to, save_image
         from app.services.helper import unsort_map
-
-        if os.path.exists(self._file_path):
-            backup_dir = os.path.join(os.path.dirname(self._file_path), 'backup')
-            os.makedirs(backup_dir, exist_ok=True)
-            stem = os.path.splitext(os.path.basename(self._file_path))[0]
-            existing = [f for f in os.listdir(backup_dir)
-                        if re.match(rf'^{re.escape(stem)}_(\d+)\.json$', f)]
-            nums = [int(re.search(r'_(\d+)\.json$', f).group(1)) for f in existing]
-            n = max(nums) + 1 if nums else 0
-            shutil.copy2(self._file_path, os.path.join(backup_dir, f'{stem}_{n}.json'))
 
         data = [
             [{'name': f.name, 'rotation': f.rotation,
@@ -543,13 +539,18 @@ class InlineEditor:
              for f in row]
             for row in self._matrix.frames_map
         ]
-        save_level_to(data, unsort_map(copy.deepcopy(data)), self._file_path, self._version)
+        shuffled = self._shuffled_data if self._shuffled_data else unsort_map(copy.deepcopy(data))
+        save_level_to(data, shuffled, self._file_path, self._version)
+        stem = os.path.splitext(os.path.basename(self._file_path))[0]
+        save_image(data, stem)
+        if shuffled:
+            save_image(shuffled, stem + '_shuffled')
         self._saved_state = self._snapshot()
 
 
 # ── shuffled window (separate process) ────────────────────────────────────────
 
-def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file, ready=None):
+def _shuffled_worker(shuffled_data, update_queue, response_queue, dirty, position, sys_path, prefs_file, ready=None):
     """Runs in a child process: its own pygame loop for the shuffled view."""
     import sys, json, queue as _queue, os
     for p in reversed(sys_path):
@@ -583,9 +584,21 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
         # apply tile changes sent from the main process
         try:
             while True:
-                r, c, name, frame_type = update_queue.get_nowait()
-                cur_rot = matrix.frames_map[r][c].rotation
-                matrix.replace_frame(r, c, name, cur_rot, frame_type)
+                msg = update_queue.get_nowait()
+                if msg[0] == '__get_state__':
+                    state = [
+                        [{'name': f.name, 'rotation': f.rotation,
+                          'type': ('battery' if f.is_battery()
+                                   else 'target' if f.is_target()
+                                   else 'pipeline')}
+                         for f in row]
+                        for row in matrix.frames_map
+                    ]
+                    response_queue.put(state)
+                else:
+                    r, c, name, frame_type = msg
+                    cur_rot = matrix.frames_map[r][c].rotation
+                    matrix.replace_frame(r, c, name, cur_rot, frame_type)
         except _queue.Empty:
             pass
 
@@ -610,6 +623,7 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
                 c2 = event.pos[0] // MF
                 if 0 <= r2 < shape[0] and 0 <= c2 < shape[1]:
                     matrix.turn_frame(r2, c2)
+                    dirty.value = True
 
         render.render()
         pygame.display.flip()
@@ -619,11 +633,14 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
 class ShuffledWindow:
     def __init__(self, shuffled_data, position=None):
         import sys, multiprocessing, threading
-        self._queue = multiprocessing.Queue()
+        self._queue          = multiprocessing.Queue()
+        self._response_queue = multiprocessing.Queue()
+        self._dirty          = multiprocessing.Value('b', False)
         ready = multiprocessing.Event()
         self._proc  = multiprocessing.Process(
             target=_shuffled_worker,
-            args=(shuffled_data, self._queue, position, sys.path, PREFS_FILE, ready),
+            args=(shuffled_data, self._queue, self._response_queue,
+                  self._dirty, position, sys.path, PREFS_FILE, ready),
             daemon=True,
         )
         self._proc.start()
@@ -653,6 +670,21 @@ class ShuffledWindow:
     def update_tile(self, r, c, name, frame_type):
         if self._alive:
             self._queue.put((r, c, name, frame_type))
+
+    def get_state(self, timeout=1.0):
+        if not self._alive:
+            return None
+        self._queue.put(('__get_state__',))
+        try:
+            return self._response_queue.get(timeout=timeout)
+        except Exception:
+            return None
+
+    def has_shuffled_changes(self):
+        return self._alive and bool(self._dirty.value)
+
+    def mark_saved(self):
+        self._dirty.value = False
 
     def handle_event(self, event):
         pass  # worker process handles its own events
@@ -765,9 +797,26 @@ class Launcher:
         finally:
             self._busy = False
 
+    def _do_save_editor(self):
+        if self._shuffled_win and self._shuffled_win.alive:
+            state = self._shuffled_win.get_state()
+            if state:
+                self._inline_editor._shuffled_data = state
+            self._shuffled_win.mark_saved()
+        self._inline_editor.save()
+        self._inline_editor._original_meta = self._inline_editor._compute_meta()
+        cur_panel = self._actions[self._sel].panel
+        if cur_panel:
+            cur_panel._refresh()
+        self.status = f"Saved: {self._inline_editor._file_path}"
+
     def _has_unsaved_changes(self):
-        return (self._inline_editor is not None and
-                self._inline_editor._snapshot() != self._inline_editor._saved_state)
+        if self._inline_editor is None:
+            return False
+        main_changed = self._inline_editor._snapshot() != self._inline_editor._saved_state
+        shuffled_changed = (self._shuffled_win is not None and
+                            self._shuffled_win.has_shuffled_changes())
+        return main_changed or shuffled_changed
 
     def _do_edit_levels(self):
         self._busy = False
@@ -796,8 +845,10 @@ class Launcher:
         def _on_tile_changed(r, c, name, frame_type):
             if self._shuffled_win and self._shuffled_win.alive:
                 self._shuffled_win.update_tile(r, c, name, frame_type)
+            self._inline_editor.update_shuffled_tile(r, c, name, frame_type)
 
         self._inline_editor = InlineEditor(data_map, path, version,
+                                           shuffled_data=shuffled_data,
                                            on_tile_changed=_on_tile_changed)
         if self._show_shuffled and shuffled_data:
             self._shuffled_win = ShuffledWindow(shuffled_data,
@@ -986,7 +1037,7 @@ class Launcher:
 
             # right detail column — save button + inline editor
             if self._inline_editor is not None:
-                has_changes = self._inline_editor._snapshot() != self._inline_editor._saved_state
+                has_changes = self._has_unsaved_changes()
                 if has_changes:
                     save_col = BTN_HOV if self._save_hov else BTN_BG
                     save_fg  = FG
@@ -1087,12 +1138,7 @@ class Launcher:
                         self._pending_action  = None
                         self._pending_cancel  = None
                         if result == 'save' and self._inline_editor:
-                            self._inline_editor.save()
-                            self._inline_editor._original_meta = self._inline_editor._compute_meta()
-                            cur_panel = self._actions[self._sel].panel
-                            if cur_panel:
-                                cur_panel._refresh()
-                            self.status = f"Saved: {self._inline_editor._file_path}"
+                            self._do_save_editor()
                         if result in ('save', 'discard') and action:
                             action()
                         elif result == 'cancel' and cancel:
@@ -1213,11 +1259,8 @@ class Launcher:
                                     _open()
                             elif self._inline_editor:
                                 if self._save_rect.collidepoint(pos) and \
-                                        self._inline_editor._snapshot() != self._inline_editor._saved_state:
-                                    self._inline_editor.save()
-                                    self._inline_editor._original_meta = self._inline_editor._compute_meta()
-                                    cur_action.panel._refresh()
-                                    self.status = f"Saved: {self._inline_editor._file_path}"
+                                        self._has_unsaved_changes():
+                                    self._do_save_editor()
                                 else:
                                     self._inline_editor.handle(event)
                         elif run_rect.collidepoint(pos):
