@@ -13,15 +13,7 @@ from app.services.DataMapGeneratorV2 import GeneratorV2
 from app.services.DataMapGeneratorV3 import GeneratorV3
 from app.services.helper import unsort_map
 import app.config as config
-import random as _random
 
-
-def random_rows():
-    return _random.randint(config.GENERATE_ROWS_MIN, config.GENERATE_ROWS_MAX)
-
-
-def random_cols():
-    return _random.randint(config.GENERATE_COLS_MIN, config.GENERATE_COLS_MAX)
 
 
 def random_batteries(rows, cols):
@@ -208,8 +200,8 @@ def save_image(data_map, name):
 
 VERSION_FLAGS = {
     1: set(),
-    2: {'batteries', 'shuffled', 'run'},
-    3: {'batteries', 'shuffled', 'run', 'targets-percent'},
+    2: {'batteries', 'run'},
+    3: {'batteries', 'run', 'targets-percent'},
 }
 
 
@@ -233,7 +225,7 @@ def parse_args(args):
     parsed['run'] = 'run' in bools
     parsed['batteries'] = int(kv['batteries']) if 'batteries' in kv else None
     parsed['targets_percent'] = float(kv['targets-percent']) if 'targets-percent' in kv else None
-    parsed['shuffled'] = kv.get('shuffled', '1') != '0'
+    parsed['shuffled'] = True
     parsed['rows'] = int(positional[0]) if len(positional) > 0 else None
     parsed['cols'] = int(positional[1]) if len(positional) > 1 else None
 
@@ -247,8 +239,6 @@ def validate_args(parsed):
 
     if parsed['batteries'] is not None and 'batteries' not in supported:
         unsupported.append('batteries')
-    if not parsed['shuffled'] and 'shuffled' not in supported:
-        unsupported.append('shuffled')
     if parsed['run'] and 'run' not in supported:
         unsupported.append('run')
     if parsed['targets_percent'] is not None and 'targets-percent' not in supported:
@@ -268,8 +258,8 @@ if __name__ == "__main__":
     validate_args(parsed)
 
     version = parsed['version']
-    rows = parsed['rows'] or random_rows()
-    cols = parsed['cols'] or random_cols()
+    rows = parsed['rows'] or config.GENERATE_ROWS
+    cols = parsed['cols'] or config.GENERATE_COLS
     batteries = parsed['batteries']
     shuffled = parsed['shuffled']
     run = parsed['run']
@@ -282,7 +272,6 @@ if __name__ == "__main__":
         'cols': cols,
         'batteries': batteries if batteries is not None else 'random',
         'targets_percent': f'{targets_percent}%' if targets_percent is not None else 'default',
-        'shuffled': shuffled,
         'run': run,
     }
     if version != 3:
