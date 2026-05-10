@@ -82,13 +82,15 @@ class ContextMenu:
         h = PAD * 2 + HEADER_H + max_rows * CELL
         return w, h
 
-    def show(self, x, y):
+    def show(self, x, y, bounds=None):
         w, h = self._menu_size()
-        screen = pygame.display.get_surface()
-        if screen:
-            sw, sh = screen.get_size()
-            x = min(x, sw - w)
-            y = min(y, sh - h)
+        if bounds:
+            sw, sh = bounds
+        else:
+            screen = pygame.display.get_surface()
+            sw, sh = screen.get_size() if screen else (10000, 10000)
+        x = min(x, sw - w)
+        y = min(y, sh - h)
         self.x = max(0, x)
         self.y = max(0, y)
         self.visible = True

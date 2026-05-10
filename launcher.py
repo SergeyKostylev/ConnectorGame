@@ -208,13 +208,16 @@ class Dropdown:
 class LevelListPanel:
     ITEM_H = 76
 
-    def __init__(self):
-        self._levels  = []   # list of {'name': str, 'meta': dict}
-        self.selected = -1
-        self._rects   = []
-        self._scroll  = 0    # pixel offset
-        self._list_h  = 0    # updated each draw, used in handle
-        self._font_sm = None
+    def __init__(self, on_edit=None):
+        self._levels      = []   # list of {'name': str, 'meta': dict}
+        self.selected     = -1
+        self.editing      = -1   # index of level whose edit panel is open
+        self._rects       = []
+        self._edit_rects  = []
+        self._scroll      = 0    # pixel offset
+        self._list_h      = 0
+        self._font_sm     = None
+        self._on_edit     = on_edit
         self._refresh()
 
     def _refresh(self):
@@ -242,9 +245,15 @@ class LevelListPanel:
 
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            for i, r in enumerate(self._rects):
+            for r, li in self._edit_rects:
                 if r.collidepoint(event.pos):
-                    self.selected = i
+                    self.editing = li
+                    if self._on_edit:
+                        self._on_edit(self._levels[li]['name'])
+                    return
+            for r, li in self._rects:
+                if r.collidepoint(event.pos):
+                    self.selected = li
         elif event.type == pygame.MOUSEWHEEL:
             max_scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll = max(0, min(max_scroll, self._scroll - event.y * 20))
@@ -259,14 +268,17 @@ class LevelListPanel:
         pygame.draw.rect(surf, INPUT_BG, (x, y, w, h), border_radius=4)
         pygame.draw.rect(surf, BOR,      (x, y, w, h), 1, border_radius=4)
 
-        self._list_h = h - 2
-        self._rects  = []
+        self._list_h      = h - 2
+        self._rects       = []
+        self._edit_rects  = []
         clip = surf.get_clip()
         surf.set_clip(pygame.Rect(x + 1, y + 1, list_w, h - 2))
 
-        mouse = pygame.mouse.get_pos()
-        ih    = self.ITEM_H
-        pad   = 8
+        mouse  = pygame.mouse.get_pos()
+        ih     = self.ITEM_H
+        pad    = 8
+        btn_w  = 36
+        btn_h  = 18
 
         for li, entry in enumerate(self._levels):
             ry = y + 1 + li * ih - self._scroll
@@ -275,7 +287,7 @@ class LevelListPanel:
             if ry > y + h - 1:
                 break
             r = pygame.Rect(x + 1, ry, list_w, ih)
-            self._rects.append(r)
+            self._rects.append((r, li))
 
             if li == self.selected:
                 bg = NAV_SEL
@@ -284,6 +296,17 @@ class LevelListPanel:
             else:
                 bg = INPUT_BG
             pygame.draw.rect(surf, bg, r)
+
+            # edit button (top-right)
+            eb = pygame.Rect(r.right - btn_w - pad, ry + pad, btn_w, btn_h)
+            self._edit_rects.append((eb, li))
+            eb_hov = eb.collidepoint(mouse)
+            eb_sel = li == self.editing
+            eb_col = BTN_HOV if (eb_hov or eb_sel) else BTN_BG
+            pygame.draw.rect(surf, eb_col, eb, border_radius=3)
+            et = self._font_sm.render("Edit", True, FG)
+            surf.blit(et, (eb.centerx - et.get_width() // 2,
+                           eb.centery - et.get_height() // 2))
 
             # name
             ty = ry + pad
@@ -336,6 +359,126 @@ class Action:
         self.panel  = panel
 
 
+# ── inline editor ─────────────────────────────────────────────────────────────
+
+class InlineEditor:
+    def __init__(self, data_map, file_path, version):
+        from app.models.Matrix import Matrix
+        from app.services.render import Cursor, MF_SIZE
+        from app.editor.render_editor import RenderEditor
+        from app.editor.context_menu import ContextMenu
+        from app.editor.top_menu import MENU_H
+
+        self._MF      = MF_SIZE
+        self._MENU_H  = MENU_H
+        self._file_path = file_path
+        self._version   = version
+
+        matrix = Matrix(frame_map_data=data_map)
+        shape  = matrix.get_shape()
+        self._matrix  = matrix
+        self._cursor  = Cursor((0, 0), shape[1] * MF_SIZE, shape[0] * MF_SIZE)
+        self._context_menu    = ContextMenu()
+        self._right_click_tile = None
+
+        ew, eh = shape[1] * MF_SIZE, shape[0] * MF_SIZE + MENU_H
+        self._surf   = pygame.Surface((ew, eh))
+        self._render = RenderEditor(matrix, self._cursor, surface=self._surf)
+
+        self._saved_state = self._snapshot()
+        self._ox = 0   # screen offset, updated in draw()
+        self._oy = 0
+        self._scale = 1.0
+
+    def _snapshot(self):
+        return tuple(
+            (f.name, f.rotation,
+             'battery' if f.is_battery() else 'target' if f.is_target() else 'pipeline')
+            for row in self._matrix.frames_map for f in row
+        )
+
+    def _translate(self, pos):
+        return (int((pos[0] - self._ox) / self._scale),
+                int((pos[1] - self._oy) / self._scale))
+
+    def handle(self, event):
+        # context menu uses screen coords; tiles use editor-local coords
+        if event.type == pygame.MOUSEMOTION:
+            tp = self._translate(event.pos)
+            self._context_menu.handle_hover(event.pos)   # screen coords
+            self._render.top_menu.handle_hover(tp)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            tp = self._translate(event.pos)
+            if event.button == 1:
+                action = self._render.top_menu.handle_click(tp)
+                if action == 'save':
+                    self.save()
+                    return
+                if self._context_menu.visible:
+                    item = self._context_menu.handle_click(event.pos)  # screen coords
+                    if item is not None and self._right_click_tile is not None:
+                        name, rotation, frame_type = item
+                        r, c = self._right_click_tile
+                        self._matrix.replace_frame(r, c, name, rotation, frame_type)
+                else:
+                    gy = tp[1] - self._MENU_H
+                    if gy >= 0:
+                        r, c = gy // self._MF, tp[0] // self._MF
+                        if self._matrix.frame_exist(r, c):
+                            self._matrix.turn_frame(r, c)
+            elif event.button == 3:
+                tp = self._translate(event.pos)
+                gy = tp[1] - self._MENU_H
+                if gy >= 0:
+                    self._right_click_tile = (gy // self._MF, tp[0] // self._MF)
+                    self._context_menu.show(*event.pos)  # screen coords, clamped to display
+
+    def draw(self, dest, x, y, w, h):
+        self._render.render()
+        # context menu is NOT drawn here — drawn via draw_overlay() on the launcher screen
+
+        ew, eh = self._surf.get_size()
+        scale  = min(w / ew, h / eh, 1.0)
+        sw, sh = int(ew * scale), int(eh * scale)
+        bx = x + (w - sw) // 2
+        by = y + (h - sh) // 2
+
+        self._ox, self._oy, self._scale = bx, by, scale
+
+        scaled = pygame.transform.scale(self._surf, (sw, sh)) if scale < 1.0 else self._surf
+        dest.blit(scaled, (bx, by))
+
+    def draw_overlay(self, dest):
+        """Draw context menu directly on dest (launcher screen) at screen coords."""
+        self._context_menu.draw(dest)
+
+    def save(self):
+        if self._snapshot() == self._saved_state or self._file_path is None:
+            return
+        import copy, re, shutil
+        from generate import save_level_to
+        from app.services.helper import unsort_map
+
+        if os.path.exists(self._file_path):
+            backup_dir = os.path.join(os.path.dirname(self._file_path), 'backup')
+            os.makedirs(backup_dir, exist_ok=True)
+            stem = os.path.splitext(os.path.basename(self._file_path))[0]
+            existing = [f for f in os.listdir(backup_dir)
+                        if re.match(rf'^{re.escape(stem)}_(\d+)\.json$', f)]
+            nums = [int(re.search(r'_(\d+)\.json$', f).group(1)) for f in existing]
+            n = max(nums) + 1 if nums else 0
+            shutil.copy2(self._file_path, os.path.join(backup_dir, f'{stem}_{n}.json'))
+
+        data = [
+            [{'name': f.name, 'rotation': f.rotation,
+              'type': 'battery' if f.is_battery() else 'target' if f.is_target() else 'pipeline'}
+             for f in row]
+            for row in self._matrix.frames_map
+        ]
+        save_level_to(data, unsort_map(copy.deepcopy(data)), self._file_path, self._version)
+        self._saved_state = self._snapshot()
+
+
 # ── launcher ──────────────────────────────────────────────────────────────────
 
 class Launcher:
@@ -346,10 +489,11 @@ class Launcher:
         pygame.display.set_caption("ConnectorGame")
         self.font     = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 15)
         self.font_h   = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 19)
-        self.status   = ""
-        self._busy    = False
-        self._sel     = 0
-        self._actions = self._build_actions()
+        self.status         = ""
+        self._busy          = False
+        self._sel           = 0
+        self._inline_editor = None
+        self._actions       = self._build_actions()
         self._load_prefs()
 
     @staticmethod
@@ -378,7 +522,7 @@ class Launcher:
         return [
             Action("Generate v3",  gen_inputs,         self._do_generate),
             Action("Edit Levels",  [],                 self._do_edit_levels,
-                   panel=LevelListPanel()),
+                   panel=LevelListPanel(on_edit=self._open_editor)),
         ]
 
     # ── generate v3 ───────────────────────────────────────────────────────────
@@ -413,6 +557,12 @@ class Launcher:
 
     def _do_edit_levels(self):
         self._busy = False
+
+    def _open_editor(self, level_name):
+        from generate import load_level_file
+        path = os.path.join(LEVELS_DIR, f"{level_name}.json")
+        data_map, _, version = load_level_file(path)
+        self._inline_editor = InlineEditor(data_map, path, version)
 
     def _save_prefs(self):
         data = {"window_size": list(self.screen.get_size()), "selected": self._sel}
@@ -503,7 +653,9 @@ class Launcher:
 
         if action.panel is not None:
             # two-column panel layout
-            col_w = min(right_w // 2, max(260, int(right_w * 0.30)))
+            col_w   = min(right_w // 2, max(260, int(right_w * 0.30)))
+            detail_x = right_x + col_w + PAD
+            detail_w = sw - detail_x - PAD
             action.panel.draw(self.screen, self.font,
                               right_x, HEADER_H + PAD, col_w, content_h_inner)
             # separator
@@ -511,6 +663,11 @@ class Launcher:
             pygame.draw.line(self.screen, SEP,
                              (sep_x, HEADER_H + PAD),
                              (sep_x, sh - STATUS_H - PAD))
+            # right detail column — inline editor
+            if self._inline_editor is not None:
+                self._inline_editor.draw(
+                    self.screen, detail_x, HEADER_H + PAD, detail_w, content_h_inner
+                )
         else:
             # right panel — params (fixed-width, centred horizontally)
             row_w  = LABEL_W + INP_W
@@ -547,6 +704,10 @@ class Launcher:
             st = self.font.render(self.status, True, FG_STATUS)
             self.screen.blit(st, (PAD, sh - STATUS_H + (STATUS_H - st.get_height()) // 2))
 
+        # inline editor context menu — drawn on top of everything
+        if self._inline_editor and action.panel:
+            self._inline_editor.draw_overlay(self.screen)
+
         return nav_rects, run_rect
 
     # ── loop ─────────────────────────────────────────────────────────────────
@@ -577,6 +738,8 @@ class Launcher:
                     run_hov = run_rect.collidepoint(pos)
                     for _, w in cur_action.inputs:
                         w.handle(event)
+                    if self._inline_editor and cur_action.panel:
+                        self._inline_editor.handle(event)
 
                 if event.type == pygame.MOUSEWHEEL:
                     if cur_action.panel:
@@ -594,6 +757,8 @@ class Launcher:
                     else:
                         if cur_action.panel:
                             cur_action.panel.handle(event)
+                            if self._inline_editor:
+                                self._inline_editor.handle(event)
                         elif run_rect.collidepoint(pos):
                             self._run_selected()
                             continue
@@ -606,6 +771,10 @@ class Launcher:
                                 for _, w in cur_action.inputs:
                                     w.handle(event)
                     continue
+
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                    if self._inline_editor and cur_action.panel:
+                        self._inline_editor.handle(event)
 
                 if not cur_action.panel:
                     consumed = False

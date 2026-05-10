@@ -39,6 +39,18 @@ class Matrix(GraphHelper):
             self.__batteries_position_names.add(name)
 
 
+    def replace_frame(self, x, y, name, rotation, frame_type):
+        old = self.frames_map[x][y]
+        node_name = create_node_name(x, y)
+        if old.is_target():
+            self.__targets_position_names.discard(node_name)
+        elif old.is_battery():
+            self.__batteries_position_names.discard(node_name)
+        new_mf = MatrixFrame(name, rotation, frame_type)
+        self.frames_map[x][y] = new_mf
+        self.__registrate_frame_as_target_or_battery(x, y, new_mf)
+        self.reconnect_one(x, y, True)
+
     def turn_frame(self, x, y):
         self.frames_map[x][y].turn()
         self.reconnect_one(x, y, True)

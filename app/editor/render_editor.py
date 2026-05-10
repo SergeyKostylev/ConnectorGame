@@ -4,13 +4,14 @@ from app.editor.top_menu import TopMenu, MENU_H
 
 
 class RenderEditor(Render):
-    def __init__(self, matrix, cursor):
-        super().__init__(matrix, cursor)
-        MIN_TILES = 10
-        shape = matrix.get_shape()
-        w = max(shape[1] * MF_SIZE, MIN_TILES * MF_SIZE)
-        h = max(shape[0] * MF_SIZE, MIN_TILES * MF_SIZE) + MENU_H
-        self.screen = pygame.display.set_mode((w, h))
+    def __init__(self, matrix, cursor, surface=None):
+        super().__init__(matrix, cursor, surface=surface)
+        if surface is None:
+            MIN_TILES = 10
+            shape = matrix.get_shape()
+            w = max(shape[1] * MF_SIZE, MIN_TILES * MF_SIZE)
+            h = max(shape[0] * MF_SIZE, MIN_TILES * MF_SIZE) + MENU_H
+            self.screen = pygame.display.set_mode((w, h))
         self.top_menu = TopMenu()
 
     def render(self):
