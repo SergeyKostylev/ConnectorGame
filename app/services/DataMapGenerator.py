@@ -1,4 +1,4 @@
-from app.services.Maze import prim_maze, draw_maze
+from app.services.Maze import prim_maze
 from app.config import frames
 import numpy as np
 
@@ -26,7 +26,6 @@ class Generator:
 
     def __get_frames_shapes(self, width, height):
         maze = prim_maze(width, height)
-        draw_maze(maze)
         res = []
 
         maze = self.__insert_dynamic_zeros_or_twos(maze)
@@ -39,8 +38,6 @@ class Generator:
                 info = self.__get_info_by_block(block)
                 row.append(info)
             res.append(row)
-
-        draw_maze(maze)
 
         return res
 

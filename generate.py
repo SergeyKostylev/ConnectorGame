@@ -3,10 +3,7 @@ import os
 import re
 import json
 import subprocess
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from PIL import Image, ImageDraw
 
 from app.services.DataMapGenerator import Generator
 from app.services.DataMapGeneratorV2 import GeneratorV2
@@ -135,67 +132,38 @@ def save_level_to(meet_map, shuffled_map, path, version):
     print(f"Saved: {path}")
 
 
+def _tile_path(cell):
+    t, n, r = cell['type'], cell['name'], cell['rotation']
+    if t == 'battery':
+        return f"./src/battery/bat_{r}.jpg"
+    if t == 'target':
+        return f"./src/target/off_{r}.jpg"
+    return f"./src/{n}{r}.jpg"
+
+
+_tile_cache: dict = {}
+
+
 def save_image(data_map, name):
-    rows = len(data_map)
-    cols = len(data_map[0])
+    tile_px = config.MATRIX_FRAME_RENDER_SIZE
+    rows, cols = len(data_map), len(data_map[0])
+    img = Image.new('RGB', (cols * tile_px, rows * tile_px))
 
-    cell = 1.0
-    fig, ax = plt.subplots(figsize=(cols, rows))
-    ax.set_xlim(0, cols)
-    ax.set_ylim(0, rows)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    ax.invert_yaxis()
-
-    type_colors = {
-        "battery": "#f5c542",
-        "target":  "#5bc8f5",
-        "pipeline": "#e8e8e8",
-        "missing":  "#cccccc",
-    }
-    connector_color = "#333333"
-    lw = 2.5
-
+    draw = ImageDraw.Draw(img)
     for i, row in enumerate(data_map):
-        for j, cell_data in enumerate(row):
-            frame_type = cell_data.get("type", "pipeline")
-            color = type_colors.get(frame_type, "#ffffff")
+        for j, cell in enumerate(row):
+            path = _tile_path(cell)
+            if path not in _tile_cache:
+                _tile_cache[path] = Image.open(path).convert('RGB').resize(
+                    (tile_px, tile_px), Image.LANCZOS
+                )
+            x, y = j * tile_px, i * tile_px
+            img.paste(_tile_cache[path], (x, y))
+            draw.rectangle((x, y, x + tile_px - 1, y + tile_px - 1), outline=(28, 107, 160), width=1)
 
-            rect = patches.FancyBboxPatch(
-                (j + 0.05, i + 0.05), 0.9, 0.9,
-                boxstyle="round,pad=0.05",
-                linewidth=1,
-                edgecolor="#aaaaaa",
-                facecolor=color,
-            )
-            ax.add_patch(rect)
-
-            name_key = cell_data["name"]
-            rotation = cell_data["rotation"]
-
-            shape = config.frames[name_key]
-            from app.models.MatrixFrame import MatrixFrame
-            mf = MatrixFrame(name_key, rotation, frame_type)
-
-            cx, cy = j + 0.5, i + 0.5
-            half = 0.45
-
-            if mf.has_connector("top"):
-                ax.plot([cx, cx], [cy, cy - half], color=connector_color, lw=lw, solid_capstyle="round")
-            if mf.has_connector("bottom"):
-                ax.plot([cx, cx], [cy, cy + half], color=connector_color, lw=lw, solid_capstyle="round")
-            if mf.has_connector("left"):
-                ax.plot([cx - half, cx], [cy, cy], color=connector_color, lw=lw, solid_capstyle="round")
-            if mf.has_connector("right"):
-                ax.plot([cx, cx + half], [cy, cy], color=connector_color, lw=lw, solid_capstyle="round")
-
-            ax.plot(cx, cy, "o", color=connector_color, markersize=4)
-
-    path = os.path.join(LEVELS_DIR, f"{name}.png")
-    plt.savefig(path, bbox_inches="tight", dpi=96)
-    plt.close()
-    print(f"Saved image: {path}")
-    subprocess.run(["open", path])
+    out = os.path.join(LEVELS_DIR, f"{name}.png")
+    img.save(out)
+    print(f"Saved image: {out}")
 
 
 VERSION_FLAGS = {
@@ -297,6 +265,8 @@ if __name__ == "__main__":
     shuffled_data = unsort_map(copy.deepcopy(data_map)) if shuffled else []
     save_level(data_map, shuffled_data, name, version)
     save_image(data_map, name)
+    if shuffled_data:
+        save_image(shuffled_data, name + "_shuffled")
 
     if run:
         from app.pygame import App
