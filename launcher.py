@@ -8,8 +8,9 @@ import pygame
 import app.config as config
 from app.services.DataMapGeneratorV3 import DEFAULT_TARGETS_PCT
 
-PREFS_FILE  = ".launcher_prefs.json"
-LEVELS_DIR  = "levels"
+PREFS_FILE        = ".launcher_prefs.json"
+SHUFFLED_POS_FILE = ".shuffled_window_pos.json"
+LEVELS_DIR        = "levels"
 
 W, H      = 480, 340
 LEFT_W    = 195
@@ -346,7 +347,7 @@ class Action:
 # ── inline editor ─────────────────────────────────────────────────────────────
 
 class InlineEditor:
-    def __init__(self, data_map, file_path, version):
+    def __init__(self, data_map, file_path, version, on_tile_changed=None):
         from app.models.Matrix import Matrix
         from app.services.render import Cursor, MF_SIZE
         from app.editor.render_editor import RenderEditor
@@ -369,7 +370,8 @@ class InlineEditor:
         self._surf   = pygame.Surface((ew, eh))
         self._render = RenderEditor(matrix, self._cursor, surface=self._surf, show_menu=False)
 
-        self._MENU_H  = 0  # no top menu in inline mode
+        self._MENU_H        = 0  # no top menu in inline mode
+        self._on_tile_changed = on_tile_changed
         self._saved_state   = self._snapshot()
         self._original_meta = self._compute_meta()
         self._ox = 0   # screen offset, updated in draw()
@@ -421,6 +423,8 @@ class InlineEditor:
                         name, rotation, frame_type = item
                         r, c = self._right_click_tile
                         self._matrix.replace_frame(r, c, name, rotation, frame_type)
+                        if self._on_tile_changed:
+                            self._on_tile_changed(r, c, name, frame_type)
                 else:
                     gy = tp[1] - self._MENU_H
                     if gy >= 0:
@@ -438,9 +442,11 @@ class InlineEditor:
         self._render.render()
         # context menu is NOT drawn here — drawn via draw_overlay() on the launcher screen
 
+        if w <= 0 or h <= 0:
+            return
         ew, eh = self._surf.get_size()
         scale  = min(w / ew, h / eh, 1.0)
-        sw, sh = int(ew * scale), int(eh * scale)
+        sw, sh = max(1, int(ew * scale)), max(1, int(eh * scale))
         bx = x + (w - sw) // 2
         by = y + (h - sh) // 2
 
@@ -480,6 +486,103 @@ class InlineEditor:
         self._saved_state = self._snapshot()
 
 
+# ── shuffled window (separate process) ────────────────────────────────────────
+
+def _shuffled_worker(shuffled_data, update_queue, position, sys_path):
+    """Runs in a child process: its own pygame loop for the shuffled view."""
+    import sys, json, queue as _queue
+    for p in reversed(sys_path):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    import pygame
+    from app.models.Matrix import Matrix
+    from app.services.render import MF_SIZE, Cursor, Render
+
+    MF = MF_SIZE
+    matrix = Matrix(frame_map_data=shuffled_data)
+    shape  = matrix.get_shape()
+    w, h   = shape[1] * MF, shape[0] * MF
+
+    if position:
+        import os
+        os.environ['SDL_VIDEO_WINDOW_POS'] = f"{position[0]},{position[1]}"
+
+    pygame.init()
+    screen = pygame.display.set_mode((w, h))
+    pygame.display.set_caption("Shuffled")
+    cursor = Cursor((0, 0), w, h)
+    render = Render(matrix, cursor, surface=screen, show_cursor=False)
+    clock  = pygame.time.Clock()
+
+    while True:
+        # apply tile changes sent from the main process
+        try:
+            while True:
+                r, c, name, frame_type = update_queue.get_nowait()
+                cur_rot = matrix.frames_map[r][c].rotation
+                matrix.replace_frame(r, c, name, cur_rot, frame_type)
+        except _queue.Empty:
+            pass
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                return
+            elif event.type == pygame.WINDOWMOVED:
+                try:
+                    with open(SHUFFLED_POS_FILE, 'w') as f:
+                        json.dump({'x': event.x, 'y': event.y}, f)
+                except Exception:
+                    pass
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                r2 = event.pos[1] // MF
+                c2 = event.pos[0] // MF
+                if 0 <= r2 < shape[0] and 0 <= c2 < shape[1]:
+                    matrix.turn_frame(r2, c2)
+
+        render.render()
+        pygame.display.flip()
+        clock.tick(30)
+
+
+class ShuffledWindow:
+    def __init__(self, shuffled_data, position=None):
+        import sys, multiprocessing
+        self._queue = multiprocessing.Queue()
+        self._proc  = multiprocessing.Process(
+            target=_shuffled_worker,
+            args=(shuffled_data, self._queue, position, sys.path),
+            daemon=True,
+        )
+        self._proc.start()
+        self._alive = True
+
+    def update_tile(self, r, c, name, frame_type):
+        if self._alive:
+            self._queue.put((r, c, name, frame_type))
+
+    def handle_event(self, event):
+        pass  # worker process handles its own events
+
+    def render(self):
+        pass  # worker process renders its own window
+
+    def close(self):
+        if self._alive:
+            self._alive = False
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    @property
+    def alive(self):
+        if self._alive and not self._proc.is_alive():
+            self._alive = False
+        return self._alive
+
+
 # ── launcher ──────────────────────────────────────────────────────────────────
 
 class Launcher:
@@ -496,9 +599,15 @@ class Launcher:
         self._busy          = False
         self._sel           = 0
         self._inline_editor   = None
-        self._shuffled_proc   = None
-        self._save_rect       = pygame.Rect(0, 0, 0, 0)
-        self._save_hov        = False
+        self._shuffled_win    = None
+        self._save_rect           = pygame.Rect(0, 0, 0, 0)
+        self._save_hov            = False
+        self._show_shuffled       = True
+        self._show_shuffled_rect  = pygame.Rect(0, 0, 0, 0)
+        self._list_col_w      = None   # None = auto
+        self._col_resizing    = False
+        self._resize_hov      = False
+        self._resize_handle   = pygame.Rect(0, 0, 0, 0)
         self._actions       = self._build_actions()
         self._load_prefs()
 
@@ -564,16 +673,33 @@ class Launcher:
     def _do_edit_levels(self):
         self._busy = False
 
+    @staticmethod
+    def _load_shuffled_pos():
+        try:
+            with open(SHUFFLED_POS_FILE) as f:
+                pos = json.load(f)
+            return (pos['x'], pos['y'])
+        except Exception:
+            return None
+
     def _open_editor(self, level_name):
         from generate import load_level_file
         path = os.path.join(LEVELS_DIR, f"{level_name}.json")
-        data_map, _, version = load_level_file(path)
-        self._inline_editor = InlineEditor(data_map, path, version)
-        if self._shuffled_proc and self._shuffled_proc.poll() is None:
-            self._shuffled_proc.terminate()
-        self._shuffled_proc = subprocess.Popen(
-            [sys.executable, "main.py", "--shuffled", path]
-        )
+        data_map, shuffled_data, version = load_level_file(path)
+
+        if self._shuffled_win:
+            self._shuffled_win.close()
+            self._shuffled_win = None
+
+        def _on_tile_changed(r, c, name, frame_type):
+            if self._shuffled_win and self._shuffled_win.alive:
+                self._shuffled_win.update_tile(r, c, name, frame_type)
+
+        self._inline_editor = InlineEditor(data_map, path, version,
+                                           on_tile_changed=_on_tile_changed)
+        if self._show_shuffled and shuffled_data:
+            self._shuffled_win = ShuffledWindow(shuffled_data,
+                                                position=self._load_shuffled_pos())
 
     def _save_prefs(self):
         data = {"window_size": list(self.screen.get_size()), "selected": self._sel}
@@ -586,6 +712,8 @@ class Launcher:
                     data[action.label][label] = widget.selected
                 elif isinstance(widget, Checkbox):
                     data[action.label][label] = widget.checked
+        data["Edit Levels"]["list_col_w"]    = self._list_col_w
+        data["Edit Levels"]["show_shuffled"] = self._show_shuffled
         try:
             with open(PREFS_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -598,6 +726,9 @@ class Launcher:
                 data = json.load(f)
         except Exception:
             return
+        edit_prefs          = data.get("Edit Levels", {})
+        self._list_col_w    = edit_prefs.get("list_col_w", None)
+        self._show_shuffled = edit_prefs.get("show_shuffled", True)
         sel = data.get("selected", 0)
         if 0 <= sel < len(self._actions):
             self._sel = sel
@@ -704,16 +835,46 @@ class Launcher:
 
         if action.panel is not None:
             # two-column panel layout
-            col_w   = min(right_w // 2, max(260, int(right_w * 0.30)))
+            if self._list_col_w is not None:
+                col_w = max(100, min(right_w // 2, self._list_col_w))
+            else:
+                col_w = min(right_w // 2, max(260, int(right_w * 0.30)))
             detail_x = right_x + col_w + PAD
             detail_w = sw - detail_x - PAD
             action.panel.draw(self.screen, self.font,
                               right_x, HEADER_H + PAD, col_w, content_h_inner)
+            # resize handle — 10px hit area, 3px visual stripe at right edge of list column
+            handle_rect = pygame.Rect(right_x + col_w - 5, HEADER_H + PAD, 10, content_h_inner)
+            self._resize_handle = handle_rect
+            if self._resize_hov or self._col_resizing:
+                hcol = BOR_ACT
+            else:
+                hcol = (70, 100, 70)
+            pygame.draw.rect(self.screen, hcol,
+                             pygame.Rect(right_x + col_w - 1, HEADER_H + PAD, 3, content_h_inner))
             # separator
             sep_x = right_x + col_w + PAD // 2
             pygame.draw.line(self.screen, SEP,
                              (sep_x, HEADER_H + PAD),
                              (sep_x, sh - STATUS_H - PAD))
+            # Show Shuffled checkbox — always visible when Edit Levels tab is active
+            chk_sz = INPUT_H
+            chk_x  = detail_x
+            chk_y  = HEADER_H + PAD + (RUN_H - chk_sz) // 2
+            self._show_shuffled_rect = pygame.Rect(chk_x, chk_y, chk_sz, chk_sz)
+            pygame.draw.rect(self.screen, INPUT_BG, self._show_shuffled_rect, border_radius=4)
+            pygame.draw.rect(self.screen, BOR,      self._show_shuffled_rect, 1, border_radius=4)
+            if self._show_shuffled:
+                m = 5; r = self._show_shuffled_rect
+                pygame.draw.line(self.screen, FG,
+                                 (r.x + m, r.centery), (r.centerx - 1, r.bottom - m), 2)
+                pygame.draw.line(self.screen, FG,
+                                 (r.centerx - 1, r.bottom - m), (r.right - m, r.y + m), 2)
+            chk_lbl = self.font.render("Show Shuffled", True, FG_DIM)
+            self.screen.blit(chk_lbl, (chk_x + chk_sz + 6,
+                                       chk_y + (chk_sz - chk_lbl.get_height()) // 2))
+            save_x = chk_x + chk_sz + 6 + chk_lbl.get_width() + PAD
+
             # right detail column — save button + inline editor
             if self._inline_editor is not None:
                 has_changes = self._inline_editor._snapshot() != self._inline_editor._saved_state
@@ -723,16 +884,16 @@ class Launcher:
                 else:
                     save_col = BTN_DIS
                     save_fg  = FG_DIS
-                self._save_rect = pygame.Rect(detail_x, HEADER_H + PAD, 70, RUN_H)
+                self._save_rect = pygame.Rect(save_x, HEADER_H + PAD, 70, RUN_H)
                 pygame.draw.rect(self.screen, save_col, self._save_rect, border_radius=6)
                 st = self.font.render("Save", True, save_fg)
                 self.screen.blit(st, (self._save_rect.centerx - st.get_width() // 2,
                                       self._save_rect.centery - st.get_height() // 2))
 
-                # meta comparison: before / new
-                mx  = self._save_rect.right + PAD
+                # meta comparison: before / new — to the right of Save button
                 fnt = self._font_sm
                 lh  = fnt.size("A")[1]
+                mx  = self._save_rect.right + PAD
                 by0 = self._save_rect.y + (RUN_H - lh * 2 - 2) // 2
                 self._draw_meta_line(fnt, "before:", self._inline_editor._original_meta,
                                      mx, by0, FG_DIM)
@@ -798,8 +959,8 @@ class Launcher:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self._save_prefs()
-                    if self._shuffled_proc and self._shuffled_proc.poll() is None:
-                        self._shuffled_proc.terminate()
+                    if self._shuffled_win:
+                        self._shuffled_win.close()
                     pygame.quit()
                     sys.exit()
                 if event.type == pygame.VIDEORESIZE:
@@ -813,7 +974,16 @@ class Launcher:
                     nav_hov = next((i for i, r in enumerate(nav_rects)
                                     if r.collidepoint(pos)), -1)
                     run_hov = run_rect.collidepoint(pos)
-                    self._save_hov = self._save_rect.collidepoint(pos)
+                    self._save_hov  = self._save_rect.collidepoint(pos)
+                    self._resize_hov = self._resize_handle.collidepoint(pos)
+                    if self._resize_hov or self._col_resizing:
+                        pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_SIZEWE)
+                    else:
+                        pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                    if self._col_resizing:
+                        sw2, _ = self.screen.get_size()
+                        new_w = pos[0] - (LEFT_W + PAD)
+                        self._list_col_w = max(100, min((sw2 - LEFT_W - PAD * 2) // 2, new_w))
                     for _, w in cur_action.inputs:
                         w.handle(event)
                     if self._inline_editor and cur_action.panel:
@@ -823,8 +993,36 @@ class Launcher:
                     if cur_action.panel:
                         cur_action.panel.handle(event)
 
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if self._col_resizing:
+                        self._col_resizing = False
+                        pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                        self._save_prefs()
+
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     pos = event.pos
+                    if self._resize_handle.collidepoint(pos):
+                        self._col_resizing = True
+                        continue
+                    if self._show_shuffled_rect.collidepoint(pos):
+                        self._show_shuffled = not self._show_shuffled
+                        self._save_prefs()
+                        if not self._show_shuffled and self._shuffled_win:
+                            self._shuffled_win.close()
+                            self._shuffled_win = None
+                        elif self._show_shuffled and self._inline_editor \
+                                and self._shuffled_win is None:
+                            # re-open shuffled window for current level
+                            cur_panel = self._actions[self._sel].panel
+                            name = cur_panel.selected_name() if cur_panel else None
+                            if name:
+                                from generate import load_level_file
+                                _, shuffled_data, _ = load_level_file(
+                                    os.path.join(LEVELS_DIR, f"{name}.json"))
+                                if shuffled_data:
+                                    self._shuffled_win = ShuffledWindow(
+                                        shuffled_data, position=self._load_shuffled_pos())
+                        continue
                     for i, r in enumerate(nav_rects):
                         if r.collidepoint(pos):
                             self._sel = i
@@ -872,6 +1070,11 @@ class Launcher:
 
             nav_rects, run_rect = self._draw(nav_hov, run_hov)
             pygame.display.flip()
+            if self._shuffled_win:
+                if self._shuffled_win.alive:
+                    self._shuffled_win.render()
+                else:
+                    self._shuffled_win = None
             clock.tick(30)
 
 

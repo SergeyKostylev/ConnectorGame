@@ -1,15 +1,18 @@
 {
   "window_size": [
-    1580,
-    932
+    1220,
+    666
   ],
   "selected": 1,
   "Generate v3": {
-    "rows": "5",
-    "cols": "7",
+    "rows": "17",
+    "cols": "12",
     "batteries %": "",
     "targets %": "",
     "edit": false
   },
-  "Edit Levels": {}
+  "Edit Levels": {
+    "list_col_w": 312,
+    "show_shuffled": true
+  }
 }

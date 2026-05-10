@@ -14,10 +14,11 @@ MF_SIZE = MATRIX_FRAME_RENDER_SIZE
 textures = {}
 
 class Render:
-    def __init__(self, matrix: Matrix, cursor: Cursor, surface=None):
+    def __init__(self, matrix: Matrix, cursor: Cursor, surface=None, show_cursor=True):
         matrix_shape = matrix.get_shape()
         SCREEN_SIZE = (matrix_shape[1] * MF_SIZE, matrix_shape[0] * MF_SIZE)
         self.screen = surface if surface is not None else pygame.display.set_mode(SCREEN_SIZE)
+        self._show_cursor = show_cursor
         self.grid: Dict[str, GritItem] = {}
         self.__set_grid(matrix)
 
@@ -45,7 +46,8 @@ class Render:
         for grid in self.grid.values():
             grid.draw(self.screen)
 
-        self.cursor.draw(self.screen)
+        if self._show_cursor:
+            self.cursor.draw(self.screen)
 
 
 def get_random_color():
