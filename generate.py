@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import json
 import subprocess
 import matplotlib
 matplotlib.use("Agg")
@@ -26,8 +27,6 @@ def random_cols():
 def random_batteries(rows, cols):
     return max(1, round(rows * cols * config.GENERATE_BATTERIES_DENSITY))
 
-SHUFFLED_DIR = os.path.join("levels", "shuffled")
-
 LEVELS_DIR = "levels"
 
 
@@ -35,7 +34,7 @@ def next_auto_name():
     os.makedirs(LEVELS_DIR, exist_ok=True)
     existing = [
         f for f in os.listdir(LEVELS_DIR)
-        if re.match(r"level_\d+\.yaml$", f)
+        if re.match(r"level_\d+\.json$", f)
     ]
     numbers = [int(re.search(r"\d+", f).group()) for f in existing]
     next_num = max(numbers) + 1 if numbers else 1
@@ -44,53 +43,104 @@ def next_auto_name():
 
 
 
-def stats_comments(data_map, version):
-    counts = {}
+def encode_tile(cell):
+    return f"{cell['name']}:{cell['rotation']}:{cell['type']}"
+
+
+def decode_tile(s):
+    name, rotation, t = s.split(':')
+    return {'name': name, 'rotation': int(rotation), 'type': t}
+
+
+def decode_map(encoded):
+    return [[decode_tile(cell) for cell in row] for row in encoded]
+
+
+def load_level_file(path):
+    with open(path) as f:
+        obj = json.load(f)
+    version = int(obj['metadata']['generator'][1:])
+    meet = decode_map(obj['meet_map'])
+    shuffled = decode_map(obj['shuffled_map']) if obj.get('shuffled_map') else []
+    return meet, shuffled, version
+
+
+def _build_metadata(data_map, version):
+    counts = {'battery': 0, 'target': 0, 'pipeline': 0, 'wall': 0}
     for row in data_map:
         for cell in row:
-            t = cell['type']
-            counts[t] = counts.get(t, 0) + 1
+            if cell['name'] == 'w':
+                counts['wall'] += 1
+            elif cell['type'] == 'battery':
+                counts['battery'] += 1
+            elif cell['type'] == 'target':
+                counts['target'] += 1
+            else:
+                counts['pipeline'] += 1
     total = sum(counts.values())
-    lines = [
-        f"# generator: v{version}",
-        f"# size: {len(data_map)}x{len(data_map[0])}",
-    ]
-    for t in ['battery', 'target', 'pipeline']:
-        c = counts.get(t, 0)
-        lines.append(f"# {t}: {c} ({c / total * 100:.1f}%)")
-    return lines
+    def fmt(k):
+        c = counts[k]
+        return f"{c} ({c / total * 100:.1f}%)"
+    return {
+        'size': f"{len(data_map)}x{len(data_map[0])}",
+        'generator': f"v{version}",
+        **{k: fmt(k) for k in ['battery', 'target', 'pipeline', 'wall']},
+    }
 
 
-def save_yaml(data_map, name, version):
-    lines = stats_comments(data_map, version)
-    for i, row in enumerate(data_map):
-        lines.append(f"# row {i + 1}")
+def _format_map_section(label, encoded_map):
+    if not encoded_map:
+        return f'  "{label}": []'
+    max_cell_len = max(len(f'"{cell}"') for row in encoded_map for cell in row)
+    col_width = max_cell_len + 2
+    lines = [f'  "{label}": [']
+    for i, row in enumerate(encoded_map):
+        parts = []
         for j, cell in enumerate(row):
-            prefix = "- - " if j == 0 else "  - "
-            lines.append(f"{prefix}name: {cell['name']} # {i + 1}-{j + 1}")
-            lines.append(f"    rotation: {cell['rotation']}")
-            lines.append(f"    type: {cell['type']}")
+            cell_str = f'"{cell}"'
+            if j < len(row) - 1:
+                parts.append((cell_str + ',').ljust(col_width))
+            else:
+                parts.append(cell_str.ljust(max_cell_len))
+        comma = ',' if i < len(encoded_map) - 1 else ''
+        lines.append(f'    [{"".join(parts)}]{comma}')
+    lines.append('  ]')
+    return '\n'.join(lines)
 
-    path = os.path.join(LEVELS_DIR, f"{name}.yaml")
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print(f"Saved YAML: {path}")
+
+def _format_level_json(metadata, meet_map, shuffled_map):
+    lines = ['{']
+    lines.append('  "metadata": {')
+    meta_items = list(metadata.items())
+    for i, (k, v) in enumerate(meta_items):
+        comma = ',' if i < len(meta_items) - 1 else ''
+        lines.append(f'    {json.dumps(k)}: {json.dumps(v)}{comma}')
+    lines.append('  },')
+    lines.append(_format_map_section('meet_map', meet_map) + ',')
+    lines.append(_format_map_section('shuffled_map', shuffled_map))
+    lines.append('}')
+    return '\n'.join(lines)
+
+
+def save_level(meet_map, shuffled_map, name, version):
+    path = os.path.join(LEVELS_DIR, f"{name}.json")
+    encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
+    encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
+    with open(path, 'w') as f:
+        f.write(_format_level_json(_build_metadata(meet_map, version), encoded_meet, encoded_shuffled))
+    print(f"Saved: {path}")
     return path
 
 
-def save_yaml_to(data_map, path, version):
-    lines = stats_comments(data_map, version)
-    for i, row in enumerate(data_map):
-        lines.append(f"# row {i + 1}")
-        for j, cell in enumerate(row):
-            prefix = "- - " if j == 0 else "  - "
-            lines.append(f"{prefix}name: {cell['name']} # {i + 1}-{j + 1}")
-            lines.append(f"    rotation: {cell['rotation']}")
-            lines.append(f"    type: {cell['type']}")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print(f"Saved YAML: {path}")
+def save_level_to(meet_map, shuffled_map, path, version):
+    encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
+    encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
+    dir_ = os.path.dirname(path)
+    if dir_:
+        os.makedirs(dir_, exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(_format_level_json(_build_metadata(meet_map, version), encoded_meet, encoded_shuffled))
+    print(f"Saved: {path}")
 
 
 def save_image(data_map, name):
@@ -254,20 +304,13 @@ if __name__ == "__main__":
     os.makedirs(LEVELS_DIR, exist_ok=True)
     name = next_auto_name()
 
-    save_yaml(data_map, name, version)
+    import copy
+    shuffled_data = unsort_map(copy.deepcopy(data_map)) if shuffled else []
+    save_level(data_map, shuffled_data, name, version)
     save_image(data_map, name)
-
-    shuffled_path = None
-    if shuffled:
-        import copy
-        shuffled_map = unsort_map(copy.deepcopy(data_map))
-        shuffled_path = os.path.join(SHUFFLED_DIR, f"{name}.yaml")
-        save_yaml_to(shuffled_map, shuffled_path, version)
 
     if run:
         from app.pygame import App
         from app.models.Matrix import Matrix
-        import yaml
-        run_path = shuffled_path if shuffled_path else os.path.join(LEVELS_DIR, f"{name}.yaml")
-        with open(run_path) as f:
-            App(Matrix(frame_map_data=yaml.safe_load(f))).run()
+        run_map = shuffled_data if shuffled_data else data_map
+        App(Matrix(frame_map_data=run_map)).run()

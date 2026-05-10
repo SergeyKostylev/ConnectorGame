@@ -1,6 +1,5 @@
 import sys
 import os
-import yaml
 
 from app.editor.app_editor import AppEditor
 from app.editor.matrix_editor import MatrixEditor
@@ -9,11 +8,11 @@ LEVELS_DIR = "levels"
 
 
 def resolve_path(arg):
-    return os.path.join(LEVELS_DIR, f"level_{int(arg):03d}.yaml") if arg.isdigit() else arg
+    return os.path.join(LEVELS_DIR, f"level_{int(arg):03d}.json") if arg.isdigit() else arg
 
 
 def find_latest():
-    files = sorted(f for f in os.listdir(LEVELS_DIR) if f.endswith('.yaml'))
+    files = sorted(f for f in os.listdir(LEVELS_DIR) if f.endswith('.json'))
     if not files:
         print("No levels found")
         sys.exit(1)
@@ -24,16 +23,15 @@ def load_level(path):
     if not os.path.exists(path):
         print(f"Level not found: {path}")
         sys.exit(1)
-    with open(path) as f:
-        return yaml.safe_load(f)
+    from generate import load_level_file
+    meet, _, _ = load_level_file(path)
+    return meet
 
 
 def read_version(path):
-    with open(path) as f:
-        for line in f:
-            if line.startswith('# generator: v'):
-                return int(line.split('v')[1].strip())
-    return 3
+    from generate import load_level_file
+    _, _, version = load_level_file(path)
+    return version
 
 
 if __name__ == '__main__':

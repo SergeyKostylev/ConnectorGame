@@ -85,10 +85,10 @@ class AppEditor(App):
         os.makedirs(backup_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(self._file_path))[0]
         existing = [f for f in os.listdir(backup_dir)
-                    if re.match(rf'^{re.escape(stem)}_(\d+)\.yaml$', f)]
-        numbers = [int(re.search(r'_(\d+)\.yaml$', f).group(1)) for f in existing]
+                    if re.match(rf'^{re.escape(stem)}_(\d+)\.json$', f)]
+        numbers = [int(re.search(r'_(\d+)\.json$', f).group(1)) for f in existing]
         n = max(numbers) + 1 if numbers else 0
-        dst = os.path.join(backup_dir, f'{stem}_{n}.yaml')
+        dst = os.path.join(backup_dir, f'{stem}_{n}.json')
         shutil.copy2(self._file_path, dst)
         print(f"  backup: {dst}")
 
@@ -108,19 +108,14 @@ class AppEditor(App):
             print("  save: no file path specified")
             return
         import copy
-        from generate import save_yaml_to
+        from generate import save_level_to
         from app.services.helper import unsort_map
 
         if os.path.exists(self._file_path):
             self._backup()
         data = self._build_data()
-        save_yaml_to(data, self._file_path, self._version)
-
-        shuffled_path = os.path.join(
-            os.path.dirname(self._file_path), 'shuffled', os.path.basename(self._file_path)
-        )
-        save_yaml_to(unsort_map(copy.deepcopy(data)), shuffled_path, self._version)
+        shuffled = unsort_map(copy.deepcopy(data))
+        save_level_to(data, shuffled, self._file_path, self._version)
 
         self._saved_state = self._snapshot()
         print(f"  saved: {self._file_path}")
-        print(f"  saved: {shuffled_path}")

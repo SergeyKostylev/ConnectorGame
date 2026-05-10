@@ -10,7 +10,7 @@ run-default:
 generate-level-v1:
 	python generate.py $(if $(rows),$(rows),) $(if $(cols),$(cols),)
 
-# Generate a v2 level: saves yaml + png to levels/, shuffled version in levels/shuffled/ by default
+# Generate a v2 level: saves json + png to levels/, shuffled version in levels/shuffled/ by default
 # Params: rows, cols, batteries=3, shuffled=0 (1 за замовчуванням), run=1 (0 за замовчуванням)
 # make generate-level-v2
 # make generate-level-v2 rows=4 cols=6
