@@ -495,9 +495,10 @@ class Launcher:
         self.status         = ""
         self._busy          = False
         self._sel           = 0
-        self._inline_editor = None
-        self._save_rect     = pygame.Rect(0, 0, 0, 0)
-        self._save_hov      = False
+        self._inline_editor   = None
+        self._shuffled_proc   = None
+        self._save_rect       = pygame.Rect(0, 0, 0, 0)
+        self._save_hov        = False
         self._actions       = self._build_actions()
         self._load_prefs()
 
@@ -568,6 +569,11 @@ class Launcher:
         path = os.path.join(LEVELS_DIR, f"{level_name}.json")
         data_map, _, version = load_level_file(path)
         self._inline_editor = InlineEditor(data_map, path, version)
+        if self._shuffled_proc and self._shuffled_proc.poll() is None:
+            self._shuffled_proc.terminate()
+        self._shuffled_proc = subprocess.Popen(
+            [sys.executable, "main.py", "--shuffled", path]
+        )
 
     def _save_prefs(self):
         data = {"window_size": list(self.screen.get_size()), "selected": self._sel}
@@ -792,6 +798,8 @@ class Launcher:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self._save_prefs()
+                    if self._shuffled_proc and self._shuffled_proc.poll() is None:
+                        self._shuffled_proc.terminate()
                     pygame.quit()
                     sys.exit()
                 if event.type == pygame.VIDEORESIZE:

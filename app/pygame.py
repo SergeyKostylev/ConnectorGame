@@ -41,10 +41,16 @@ class App:
         # while len(self.__snake_command_buf) != 0:
         #     self.__game_area.add_snake_turn_command(self.__snake_command_buf.pop(0))
 
+    def on_window_moved(self, x, y):
+        pass
+
     def process_input(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.exit()
+
+            elif event.type == pygame.WINDOWMOVED:
+                self.on_window_moved(event.x, event.y)
 
             elif event.type == pygame.KEYDOWN:
                 command = None

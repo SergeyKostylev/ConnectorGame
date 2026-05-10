@@ -1,11 +1,22 @@
 import sys
 import os
+import json
 import copy
 from app.pygame import App
 from app.services.helper import *
 import app.config as config
 
-LEVELS_DIR = "levels"
+LEVELS_DIR        = "levels"
+SHUFFLED_POS_FILE = ".shuffled_window_pos.json"
+
+
+class _PosTrackingApp(App):
+    def on_window_moved(self, x, y):
+        try:
+            with open(SHUFFLED_POS_FILE, 'w') as f:
+                json.dump({'x': x, 'y': y}, f)
+        except Exception:
+            pass
 
 
 def test_console():
@@ -20,12 +31,22 @@ def test_console():
     show_graph(m)
 
 
-def run_py_game(data_map=None):
+def run_py_game(data_map=None, track_pos=False):
     if data_map is None:
         data_map = get_default_figure_map()
     m = Matrix(frame_map_data=data_map)
 
-    app = App(m)
+    if track_pos:
+        try:
+            with open(SHUFFLED_POS_FILE) as f:
+                pos = json.load(f)
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pos['x']},{pos['y']}"
+        except Exception:
+            pass
+        app = _PosTrackingApp(m)
+    else:
+        app = App(m)
+
     if config.DEBUG:
         show_graph(m)
         show_in_console(m)
@@ -72,8 +93,8 @@ if __name__ == '__main__':
     elif len(args) == 1:
         path = resolve_path(args[0])
         log({'command': 'level-run', 'file': path, 'shuffled': shuffled})
-        run_py_game(load_level(path, use_shuffled=shuffled))
+        run_py_game(load_level(path, use_shuffled=shuffled), track_pos=shuffled)
     elif len(args) == 0:
         path = find_latest()
         log({'command': 'level-run', 'file': path, 'shuffled': shuffled, 'mode': 'latest'})
-        run_py_game(load_level(path, use_shuffled=shuffled))
+        run_py_game(load_level(path, use_shuffled=shuffled), track_pos=shuffled)
