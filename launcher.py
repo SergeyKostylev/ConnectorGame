@@ -8,9 +8,8 @@ import pygame
 import app.config as config
 from app.services.DataMapGeneratorV3 import DEFAULT_TARGETS_PCT
 
-PREFS_FILE        = ".launcher_prefs.json"
-SHUFFLED_POS_FILE = ".shuffled_window_pos.json"
-LEVELS_DIR        = "levels"
+PREFS_FILE  = ".launcher_prefs.json"
+LEVELS_DIR  = "levels"
 
 W, H      = 480, 340
 LEFT_W    = 195
@@ -488,7 +487,7 @@ class InlineEditor:
 
 # ── shuffled window (separate process) ────────────────────────────────────────
 
-def _shuffled_worker(shuffled_data, update_queue, position, sys_path):
+def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file):
     """Runs in a child process: its own pygame loop for the shuffled view."""
     import sys, json, queue as _queue
     for p in reversed(sys_path):
@@ -531,8 +530,14 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path):
                 return
             elif event.type == pygame.WINDOWMOVED:
                 try:
-                    with open(SHUFFLED_POS_FILE, 'w') as f:
-                        json.dump({'x': event.x, 'y': event.y}, f)
+                    try:
+                        with open(prefs_file) as _f:
+                            _d = json.load(_f)
+                    except Exception:
+                        _d = {}
+                    _d.setdefault("Edit Levels", {})["shuffled_pos"] = [event.x, event.y]
+                    with open(prefs_file, 'w') as _f:
+                        json.dump(_d, _f, indent=2)
                 except Exception:
                     pass
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -552,7 +557,7 @@ class ShuffledWindow:
         self._queue = multiprocessing.Queue()
         self._proc  = multiprocessing.Process(
             target=_shuffled_worker,
-            args=(shuffled_data, self._queue, position, sys.path),
+            args=(shuffled_data, self._queue, position, sys.path, PREFS_FILE),
             daemon=True,
         )
         self._proc.start()
@@ -676,11 +681,14 @@ class Launcher:
     @staticmethod
     def _load_shuffled_pos():
         try:
-            with open(SHUFFLED_POS_FILE) as f:
-                pos = json.load(f)
-            return (pos['x'], pos['y'])
+            with open(PREFS_FILE) as f:
+                data = json.load(f)
+            pos = data.get("Edit Levels", {}).get("shuffled_pos")
+            if pos:
+                return (pos[0], pos[1])
         except Exception:
-            return None
+            pass
+        return None
 
     def _open_editor(self, level_name):
         from generate import load_level_file
@@ -702,9 +710,18 @@ class Launcher:
                                                 position=self._load_shuffled_pos())
 
     def _save_prefs(self):
-        data = {"window_size": list(self.screen.get_size()), "selected": self._sel}
+        try:
+            with open(PREFS_FILE) as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        data["window_size"] = list(self.screen.get_size())
+        data["selected"]    = self._sel
+        data.setdefault("Edit Levels", {})
+        data["Edit Levels"]["list_col_w"]    = self._list_col_w
+        data["Edit Levels"]["show_shuffled"] = self._show_shuffled
         for action in self._actions:
-            data[action.label] = {}
+            data[action.label] = data.get(action.label, {})
             for label, widget in action.inputs:
                 if isinstance(widget, TextInput):
                     data[action.label][label] = widget.value
@@ -712,8 +729,6 @@ class Launcher:
                     data[action.label][label] = widget.selected
                 elif isinstance(widget, Checkbox):
                     data[action.label][label] = widget.checked
-        data["Edit Levels"]["list_col_w"]    = self._list_col_w
-        data["Edit Levels"]["show_shuffled"] = self._show_shuffled
         try:
             with open(PREFS_FILE, 'w') as f:
                 json.dump(data, f, indent=2)

@@ -5,14 +5,18 @@
   ],
   "selected": 1,
   "Generate v3": {
-    "rows": "17",
-    "cols": "12",
+    "rows": "3",
+    "cols": "3",
     "batteries %": "",
     "targets %": "",
     "edit": false
   },
   "Edit Levels": {
-    "list_col_w": 312,
-    "show_shuffled": true
+    "list_col_w": 248,
+    "show_shuffled": true,
+    "shuffled_pos": [
+      -529,
+      598
+    ]
   }
 }
