@@ -208,16 +208,16 @@ class Dropdown:
 class LevelListPanel:
     ITEM_H = 76
 
-    def __init__(self, on_edit=None):
+    def __init__(self):
         self._levels      = []   # list of {'name': str, 'meta': dict}
         self.selected     = -1
         self.editing      = -1   # index of level whose edit panel is open
+        self._prev_selected = -1
         self._rects       = []
         self._edit_rects  = []
         self._scroll      = 0    # pixel offset
         self._list_h      = 0
         self._font_sm     = None
-        self._on_edit     = on_edit
         self._refresh()
 
     def _refresh(self):
@@ -247,11 +247,10 @@ class LevelListPanel:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for r, li in self._rects:
                 if r.collidepoint(event.pos):
+                    self._prev_selected = self.selected
                     self.selected = li
                     self.editing  = li
-                    if self._on_edit:
-                        self._on_edit(self._levels[li]['name'])
-                    return
+                    return self._levels[li]['name']
         elif event.type == pygame.MOUSEWHEEL:
             max_scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll = max(0, min(max_scroll, self._scroll - event.y * 20))
@@ -341,6 +340,69 @@ class Action:
         self.inputs = inputs   # list of (label_str, widget)
         self.run_fn = run_fn
         self.panel  = panel
+
+
+# ── confirm dialog ────────────────────────────────────────────────────────────
+
+class ConfirmDialog:
+    W, H = 380, 140
+
+    def __init__(self, message):
+        self._message = message
+        self._result  = None   # None / 'save' / 'discard' / 'cancel'
+        self._rects   = {}
+        self._hov     = None
+        self._font    = None
+        self._font_sm = None
+
+    @property
+    def answered(self):
+        return self._result is not None
+
+    def handle(self, event):
+        if event.type == pygame.MOUSEMOTION:
+            self._hov = next((k for k, r in self._rects.items()
+                              if r.collidepoint(event.pos)), None)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for k, r in self._rects.items():
+                if r.collidepoint(event.pos):
+                    self._result = k
+                    return
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._result = 'cancel'
+
+    def draw(self, surf):
+        if self._font is None:
+            self._font    = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 15)
+            self._font_sm = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 13)
+        sw, sh = surf.get_size()
+        dim = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 140))
+        surf.blit(dim, (0, 0))
+        dx = (sw - self.W) // 2
+        dy = (sh - self.H) // 2
+        pygame.draw.rect(surf, HEADER, (dx, dy, self.W, self.H), border_radius=8)
+        pygame.draw.rect(surf, BOR,    (dx, dy, self.W, self.H), 1, border_radius=8)
+        t = self._font.render(self._message, True, FG)
+        surf.blit(t, (dx + (self.W - t.get_width()) // 2, dy + 28))
+        btn_w, btn_h = 100, 32
+        gap = 12
+        bx = dx + (self.W - btn_w * 3 - gap * 2) // 2
+        by = dy + self.H - btn_h - 22
+        for k, label, primary in [
+            ('save',    'Save',    True),
+            ('discard', 'Discard', False),
+            ('cancel',  'Cancel',  False),
+        ]:
+            r = pygame.Rect(bx, by, btn_w, btn_h)
+            self._rects[k] = r
+            col = BTN_HOV if self._hov == k else (BTN_BG if primary else DROP_BG)
+            pygame.draw.rect(surf, col, r, border_radius=5)
+            pygame.draw.rect(surf, BOR, r, 1, border_radius=5)
+            lt = self._font_sm.render(label, True, FG)
+            surf.blit(lt, (r.centerx - lt.get_width() // 2,
+                           r.centery - lt.get_height() // 2))
+            bx += btn_w + gap
 
 
 # ── inline editor ─────────────────────────────────────────────────────────────
@@ -487,9 +549,9 @@ class InlineEditor:
 
 # ── shuffled window (separate process) ────────────────────────────────────────
 
-def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file):
+def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file, ready=None):
     """Runs in a child process: its own pygame loop for the shuffled view."""
-    import sys, json, queue as _queue
+    import sys, json, queue as _queue, os
     for p in reversed(sys_path):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -504,7 +566,6 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
     w, h   = shape[1] * MF, shape[0] * MF
 
     if position:
-        import os
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{position[0]},{position[1]}"
 
     pygame.init()
@@ -512,6 +573,10 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
     pygame.display.set_caption("Shuffled")
     cursor = Cursor((0, 0), w, h)
     render = Render(matrix, cursor, surface=screen, show_cursor=False)
+    render.render()
+    pygame.display.flip()
+    if ready is not None:
+        ready.set()
     clock  = pygame.time.Clock()
 
     while True:
@@ -553,15 +618,37 @@ def _shuffled_worker(shuffled_data, update_queue, position, sys_path, prefs_file
 
 class ShuffledWindow:
     def __init__(self, shuffled_data, position=None):
-        import sys, multiprocessing
+        import sys, multiprocessing, threading
         self._queue = multiprocessing.Queue()
+        ready = multiprocessing.Event()
         self._proc  = multiprocessing.Process(
             target=_shuffled_worker,
-            args=(shuffled_data, self._queue, position, sys.path, PREFS_FILE),
+            args=(shuffled_data, self._queue, position, sys.path, PREFS_FILE, ready),
             daemon=True,
         )
         self._proc.start()
         self._alive = True
+        # Get NSWindow pointer now (main thread, before spawning refocus thread)
+        wm_info    = pygame.display.get_wm_info()
+        ns_win_ptr = wm_info.get('window')
+        def _refocus():
+            ready.wait(timeout=5.0)
+            if not ns_win_ptr:
+                return
+            try:
+                import ctypes, ctypes.util
+                objc = ctypes.CDLL(ctypes.util.find_library('objc'))
+                objc.sel_registerName.restype  = ctypes.c_void_p
+                objc.sel_registerName.argtypes = [ctypes.c_char_p]
+                objc.objc_msgSend.restype  = ctypes.c_void_p
+                objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.c_void_p]
+                sel = objc.sel_registerName(b'makeKeyAndOrderFront:')
+                objc.objc_msgSend(ctypes.c_void_p(ns_win_ptr), sel,
+                                  ctypes.c_void_p(0))
+            except Exception:
+                pass
+        threading.Thread(target=_refocus, daemon=True).start()
 
     def update_tile(self, r, c, name, frame_type):
         if self._alive:
@@ -605,6 +692,9 @@ class Launcher:
         self._sel           = 0
         self._inline_editor   = None
         self._shuffled_win    = None
+        self._confirm_dialog  = None
+        self._pending_action  = None
+        self._pending_cancel  = None
         self._save_rect           = pygame.Rect(0, 0, 0, 0)
         self._save_hov            = False
         self._show_shuffled       = True
@@ -642,7 +732,7 @@ class Launcher:
         return [
             Action("Generate v3",  gen_inputs,         self._do_generate),
             Action("Edit Levels",  [],                 self._do_edit_levels,
-                   panel=LevelListPanel(on_edit=self._open_editor)),
+                   panel=LevelListPanel()),
         ]
 
     # ── generate v3 ───────────────────────────────────────────────────────────
@@ -674,6 +764,10 @@ class Launcher:
             self.status = str(e)
         finally:
             self._busy = False
+
+    def _has_unsaved_changes(self):
+        return (self._inline_editor is not None and
+                self._inline_editor._snapshot() != self._inline_editor._saved_state)
 
     def _do_edit_levels(self):
         self._busy = False
@@ -959,6 +1053,10 @@ class Launcher:
         if self._inline_editor and action.panel:
             self._inline_editor.draw_overlay(self.screen)
 
+        # confirm dialog — drawn last, blocks everything below
+        if self._confirm_dialog:
+            self._confirm_dialog.draw(self.screen)
+
         return nav_rects, run_rect
 
     # ── loop ─────────────────────────────────────────────────────────────────
@@ -972,7 +1070,47 @@ class Launcher:
 
         while True:
             for event in pygame.event.get():
+                # ── confirm dialog captures all input while visible ────────────
+                if self._confirm_dialog:
+                    if event.type == pygame.QUIT:
+                        self._save_prefs()
+                        if self._shuffled_win:
+                            self._shuffled_win.close()
+                        pygame.quit()
+                        sys.exit()
+                    self._confirm_dialog.handle(event)
+                    if self._confirm_dialog.answered:
+                        result  = self._confirm_dialog._result
+                        action  = self._pending_action
+                        cancel  = self._pending_cancel
+                        self._confirm_dialog = None
+                        self._pending_action  = None
+                        self._pending_cancel  = None
+                        if result == 'save' and self._inline_editor:
+                            self._inline_editor.save()
+                            self._inline_editor._original_meta = self._inline_editor._compute_meta()
+                            cur_panel = self._actions[self._sel].panel
+                            if cur_panel:
+                                cur_panel._refresh()
+                            self.status = f"Saved: {self._inline_editor._file_path}"
+                        if result in ('save', 'discard') and action:
+                            action()
+                        elif result == 'cancel' and cancel:
+                            cancel()
+                    continue
+
                 if event.type == pygame.QUIT:
+                    if self._has_unsaved_changes():
+                        def _quit():
+                            self._save_prefs()
+                            if self._shuffled_win:
+                                self._shuffled_win.close()
+                            pygame.quit()
+                            sys.exit()
+                        self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
+                        self._pending_action = _quit
+                        self._pending_cancel = None
+                        continue
                     self._save_prefs()
                     if self._shuffled_win:
                         self._shuffled_win.close()
@@ -1040,15 +1178,40 @@ class Launcher:
                         continue
                     for i, r in enumerate(nav_rects):
                         if r.collidepoint(pos):
-                            self._sel = i
-                            if self._actions[i].panel:
-                                self._actions[i].panel._refresh()
-                            self._save_prefs()
+                            def _do_nav(idx=i):
+                                self._sel = idx
+                                self._inline_editor = None
+                                if self._shuffled_win:
+                                    self._shuffled_win.close()
+                                    self._shuffled_win = None
+                                if self._actions[idx].panel:
+                                    self._actions[idx].panel._refresh()
+                                self._save_prefs()
+                            if self._has_unsaved_changes():
+                                self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
+                                self._pending_action = _do_nav
+                                self._pending_cancel = None
+                            else:
+                                _do_nav()
                             break
                     else:
                         if cur_action.panel:
-                            cur_action.panel.handle(event)
-                            if self._inline_editor:
+                            panel_result = cur_action.panel.handle(event)
+                            if panel_result is not None:
+                                level_name = panel_result
+                                prev_sel   = cur_action.panel._prev_selected
+                                def _open(name=level_name):
+                                    self._open_editor(name)
+                                if self._has_unsaved_changes():
+                                    panel_ref = cur_action.panel
+                                    self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
+                                    self._pending_action = _open
+                                    self._pending_cancel = (
+                                        lambda ps=prev_sel, p=panel_ref: setattr(p, 'selected', ps)
+                                    )
+                                else:
+                                    _open()
+                            elif self._inline_editor:
                                 if self._save_rect.collidepoint(pos) and \
                                         self._inline_editor._snapshot() != self._inline_editor._saved_state:
                                     self._inline_editor.save()
