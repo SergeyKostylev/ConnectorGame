@@ -725,8 +725,9 @@ class Launcher:
         self._inline_editor   = None
         self._shuffled_win    = None
         self._confirm_dialog  = None
-        self._pending_action  = None
-        self._pending_cancel  = None
+        self._pending_action     = None
+        self._pending_cancel     = None
+        self._pending_edit_level = None
         self._save_rect           = pygame.Rect(0, 0, 0, 0)
         self._save_hov            = False
         self._show_shuffled       = True
@@ -760,6 +761,7 @@ class Launcher:
             ("batteries %", TextInput(bat_default,               step=1, min_val=1, max_val=99)),
             ("targets %",   TextInput(str(DEFAULT_TARGETS_PCT),  step=5, min_val=5, max_val=95)),
             ("edit",        Checkbox()),
+            ("empty level", Checkbox()),
         ]
         return [
             Action("Generate v3",  gen_inputs,         self._do_generate),
@@ -771,27 +773,49 @@ class Launcher:
 
     def _do_generate(self):
         inputs = dict(self._actions[0].inputs)
-        rows = inputs["rows"].get()
-        cols = inputs["cols"].get()
-        bat  = inputs["batteries %"].get()
-        tgt  = inputs["targets %"].get()
-        cmd = [sys.executable, "generate.py", "v3"]
-        if rows:
-            cmd.append(rows)
-        if cols:
-            if not rows:
-                cmd.append(str(config.GENERATE_ROWS))
-            cmd.append(cols)
-        if bat:
-            cmd.append(f"batteries={bat}")
-        if tgt:
-            cmd.append(f"targets-percent={tgt}")
+        rows  = inputs["rows"].get()
+        cols  = inputs["cols"].get()
+        bat   = inputs["batteries %"].get()
+        tgt   = inputs["targets %"].get()
+        edit  = inputs["edit"].get()
+        empty = inputs["empty level"].get()
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            out    = result.stdout + result.stderr
-            saved  = next((l for l in out.splitlines() if "Saved:" in l and ".json" in l), None)
-            self.status = saved.strip() if saved else (result.stderr.strip() or "Done")
+            if empty:
+                import copy
+                from generate import next_auto_name, save_level, save_image
+                from app.services.helper import unsort_map
+                r = int(rows) if rows else config.GENERATE_ROWS
+                c = int(cols) if cols else config.GENERATE_COLS
+                wall_tile    = {'name': 'w', 'rotation': 0, 'type': 'pipeline'}
+                data_map     = [[dict(wall_tile) for _ in range(c)] for _ in range(r)]
+                shuffled_map = unsort_map(copy.deepcopy(data_map))
+                name = next_auto_name()
+                path = save_level(data_map, shuffled_map, name, 3)
+                save_image(data_map, name)
+                save_image(shuffled_map, name + '_shuffled')
+                self.status = f"Saved: {path}"
+                saved = f"Saved: {path}"
+            else:
+                cmd = [sys.executable, "generate.py", "v3"]
+                if rows:
+                    cmd.append(rows)
+                if cols:
+                    if not rows:
+                        cmd.append(str(config.GENERATE_ROWS))
+                    cmd.append(cols)
+                if bat:
+                    cmd.append(f"batteries={bat}")
+                if tgt:
+                    cmd.append(f"targets-percent={tgt}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                out    = result.stdout + result.stderr
+                saved  = next((l for l in out.splitlines() if "Saved:" in l and ".json" in l), None)
+                self.status = saved.strip() if saved else (result.stderr.strip() or "Done")
+
+            if edit and saved:
+                path = saved.strip().replace("Saved:", "").strip()
+                self._pending_edit_level = os.path.splitext(os.path.basename(path))[0]
         except Exception as e:
             self.status = str(e)
         finally:
@@ -1288,6 +1312,17 @@ class Launcher:
                     if not consumed:
                         for _, w in cur_action.inputs:
                             w.handle(event)
+
+            if self._pending_edit_level and not self._busy:
+                level_name = self._pending_edit_level
+                self._pending_edit_level = None
+                self._sel = 1  # Edit Levels tab
+                panel = self._actions[1].panel
+                panel._refresh()
+                names = [l['name'] for l in panel._levels]
+                if level_name in names:
+                    panel.selected = names.index(level_name)
+                self._open_editor(level_name)
 
             nav_rects, run_rect = self._draw(nav_hov, run_hov)
             pygame.display.flip()

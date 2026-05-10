@@ -5,11 +5,12 @@
   ],
   "selected": 1,
   "Generate v3": {
-    "rows": "1",
-    "cols": "3",
+    "rows": "4",
+    "cols": "4",
     "batteries %": "",
     "targets %": "",
-    "edit": false
+    "edit": true,
+    "empty level": false
   },
   "Edit Levels": {
     "list_col_w": 248,
