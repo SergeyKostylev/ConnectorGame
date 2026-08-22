@@ -1,14 +1,14 @@
 {
   "window_size": [
     1133,
-    593
+    529
   ],
   "selected": 1,
   "Generate v3": {
-    "rows": "4",
-    "cols": "4",
-    "batteries %": "",
-    "targets %": "",
+    "rows": "6",
+    "cols": "6",
+    "batteries %": "27",
+    "targets %": "35",
     "edit": true,
     "empty level": false
   },
@@ -16,8 +16,8 @@
     "list_col_w": 248,
     "show_shuffled": true,
     "shuffled_pos": [
-      -1023,
-      214
+      535,
+      557
     ]
   }
 }

@@ -215,14 +215,15 @@ class LevelListPanel:
         self._prev_selected = -1
         self._rects       = []
         self._edit_rects  = []
-        self._scroll      = 0    # pixel offset
-        self._list_h      = 0
+        self._scroll          = 0    # pixel offset
+        self._scroll_to_bottom = True
+        self._list_h          = 0
         self._font_sm     = None
         self._refresh()
 
     def _refresh(self):
-        self.selected = -1
-        self._scroll  = 0
+        self.selected          = -1
+        self._scroll_to_bottom = True
         try:
             files = sorted(
                 f for f in os.listdir(LEVELS_DIR)
@@ -266,6 +267,9 @@ class LevelListPanel:
         pygame.draw.rect(surf, BOR,      (x, y, w, h), 1, border_radius=4)
 
         self._list_h = h - 2
+        if self._scroll_to_bottom:
+            self._scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
+            self._scroll_to_bottom = False
         self._rects  = []
         clip = surf.get_clip()
         surf.set_clip(pygame.Rect(x + 1, y + 1, list_w, h - 2))
@@ -539,7 +543,14 @@ class InlineEditor:
              for f in row]
             for row in self._matrix.frames_map
         ]
-        shuffled = self._shuffled_data if self._shuffled_data else unsort_map(copy.deepcopy(data))
+        if self._shuffled_data:
+            shuffled = self._shuffled_data
+            for row, srow in zip(data, shuffled):
+                for cell, scell in zip(row, srow):
+                    scell['name'] = cell['name']
+                    scell['type'] = cell['type']
+        else:
+            shuffled = unsort_map(copy.deepcopy(data))
         save_level_to(data, shuffled, self._file_path, self._version)
         stem = os.path.splitext(os.path.basename(self._file_path))[0]
         save_image(data, stem)
@@ -831,7 +842,12 @@ class Launcher:
         self._inline_editor._original_meta = self._inline_editor._compute_meta()
         cur_panel = self._actions[self._sel].panel
         if cur_panel:
+            prev_name = cur_panel.selected_name()
             cur_panel._refresh()
+            if prev_name:
+                names = [l['name'] for l in cur_panel._levels]
+                if prev_name in names:
+                    cur_panel.selected = names.index(prev_name)
         self.status = f"Saved: {self._inline_editor._file_path}"
 
     def _has_unsaved_changes(self):
@@ -959,8 +975,8 @@ class Launcher:
         self.screen.blit(t, (cx, y)); cx += t.get_width()
         # fields: (icon_path_or_None, fallback_text, value, gap_after)
         fields = [
-            ("src/target/off_0.jpg",  "bat:",      meta['battery'],  "  "),
-            ("src/battery/bat_270.jpg", "battery:", meta['target'],   "  "),
+            ("src/battery/bat_270.jpg", "battery:", meta['battery'],  "  "),
+            ("src/target/off_0.jpg",  "target:",   meta['target'],   "  "),
             ("src/l180.jpg",          "pipeline:", meta['pipeline'], "  "),
             (None,                    "wall:",     meta['wall'],     ""),
         ]

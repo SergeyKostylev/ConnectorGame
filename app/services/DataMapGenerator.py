@@ -13,8 +13,8 @@ class Generator:
         self.__all_shapes = self.__generate_all_shapes()
 
     def generate(self, rows = 3, columns= 3):
-        width = rows * (3 - 1)
-        height = columns * (3 - 1)
+        width = columns * (3 - 1)
+        height = rows * (3 - 1)
 
         return self.__maze_data_generator(width, height)
 
