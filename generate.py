@@ -269,9 +269,6 @@ if __name__ == "__main__":
     import copy
     shuffled_data = unsort_map(copy.deepcopy(data_map)) if shuffled else []
     save_level(data_map, shuffled_data, name, version)
-    save_image(data_map, name)
-    if shuffled_data:
-        save_image(shuffled_data, name + "_shuffled")
 
     if run:
         from app.pygame import App

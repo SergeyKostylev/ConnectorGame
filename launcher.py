@@ -534,7 +534,7 @@ class InlineEditor:
         if self._file_path is None:
             return
         import copy
-        from generate import save_level_to, save_image
+        from generate import save_level_to
         from app.services.helper import unsort_map
 
         data = [
@@ -552,10 +552,6 @@ class InlineEditor:
         else:
             shuffled = unsort_map(copy.deepcopy(data))
         save_level_to(data, shuffled, self._file_path, self._version)
-        stem = os.path.splitext(os.path.basename(self._file_path))[0]
-        save_image(data, stem)
-        if shuffled:
-            save_image(shuffled, stem + '_shuffled')
         self._saved_state = self._snapshot()
 
 
@@ -794,7 +790,7 @@ class Launcher:
         try:
             if empty:
                 import copy
-                from generate import next_auto_name, save_level, save_image
+                from generate import next_auto_name, save_level
                 from app.services.helper import unsort_map
                 r = int(rows) if rows else config.GENERATE_ROWS
                 c = int(cols) if cols else config.GENERATE_COLS
@@ -803,8 +799,6 @@ class Launcher:
                 shuffled_map = unsort_map(copy.deepcopy(data_map))
                 name = next_auto_name()
                 path = save_level(data_map, shuffled_map, name, 3)
-                save_image(data_map, name)
-                save_image(shuffled_map, name + '_shuffled')
                 self.status = f"Saved: {path}"
                 saved = f"Saved: {path}"
             else:
