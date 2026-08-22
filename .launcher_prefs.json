@@ -3,12 +3,12 @@
     1133,
     529
   ],
-  "selected": 0,
+  "selected": 1,
   "Generate v3": {
-    "rows": "7",
-    "cols": "7",
-    "batteries %": "35",
-    "targets %": "50",
+    "rows": "15",
+    "cols": "15",
+    "batteries %": "19",
+    "targets %": "20",
     "edit": true,
     "empty level": false
   },
@@ -16,8 +16,8 @@
     "list_col_w": 248,
     "show_shuffled": true,
     "shuffled_pos": [
-      385,
-      532
+      37,
+      350
     ]
   }
 }
