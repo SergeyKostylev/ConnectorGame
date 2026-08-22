@@ -219,6 +219,11 @@ class LevelListPanel:
         self._scroll_to_bottom = True
         self._list_h          = 0
         self._font_sm     = None
+        self._panel_rect  = pygame.Rect(0, 0, 0, 0)
+        self._ctx_visible = False
+        self._ctx_target  = None   # level name the context menu applies to
+        self._ctx_rect    = pygame.Rect(0, 0, 0, 0)
+        self._ctx_hov     = False
         self._refresh()
 
     def _refresh(self):
@@ -246,19 +251,42 @@ class LevelListPanel:
 
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._ctx_visible:
+                hit    = self._ctx_rect.collidepoint(event.pos)
+                target = self._ctx_target
+                self._ctx_visible = False
+                self._ctx_target  = None
+                return ('delete', target) if hit else None
             for r, li in self._rects:
                 if r.collidepoint(event.pos):
                     self._prev_selected = self.selected
                     self.selected = li
                     self.editing  = li
-                    return self._levels[li]['name']
+                    return ('open', self._levels[li]['name'])
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            self._ctx_visible = False
+            if self._panel_rect.collidepoint(event.pos):
+                for r, li in self._rects:
+                    if r.collidepoint(event.pos):
+                        self._ctx_target = self._levels[li]['name']
+                        w, h = 120, 30
+                        screen = pygame.display.get_surface()
+                        sw, sh = screen.get_size() if screen else (10000, 10000)
+                        cx = min(event.pos[0], sw - w)
+                        cy = min(event.pos[1], sh - h)
+                        self._ctx_rect = pygame.Rect(cx, cy, w, h)
+                        self._ctx_visible = True
+                        break
         elif event.type == pygame.MOUSEWHEEL:
             max_scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll = max(0, min(max_scroll, self._scroll - event.y * 20))
+        return None
 
     def draw(self, surf, font, x, y, w, h):
         if self._font_sm is None:
             self._font_sm = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 12)
+
+        self._panel_rect = pygame.Rect(x, y, w, h)
 
         SB_W = 8  # scrollbar width
         list_w = w - SB_W - 2
@@ -335,6 +363,17 @@ class LevelListPanel:
             return self._levels[self.selected]['name']
         return None
 
+    def draw_context_menu(self, surf, font):
+        if not self._ctx_visible:
+            return
+        hov = self._ctx_rect.collidepoint(pygame.mouse.get_pos())
+        bg  = DROP_HOV if hov else DROP_BG
+        pygame.draw.rect(surf, bg, self._ctx_rect, border_radius=4)
+        pygame.draw.rect(surf, BOR, self._ctx_rect, 1, border_radius=4)
+        t = font.render("Delete", True, FG)
+        surf.blit(t, (self._ctx_rect.centerx - t.get_width() // 2,
+                      self._ctx_rect.centery - t.get_height() // 2))
+
 
 # ── action definition ─────────────────────────────────────────────────────────
 
@@ -351,9 +390,14 @@ class Action:
 class ConfirmDialog:
     W, H = 380, 140
 
-    def __init__(self, message):
+    def __init__(self, message, buttons=None):
         self._message = message
-        self._result  = None   # None / 'save' / 'discard' / 'cancel'
+        self._buttons = buttons or [
+            ('save',    'Save',    True),
+            ('discard', 'Discard', False),
+            ('cancel',  'Cancel',  False),
+        ]
+        self._result  = None   # None, or one of the button keys above
         self._rects   = {}
         self._hov     = None
         self._font    = None
@@ -391,13 +435,10 @@ class ConfirmDialog:
         surf.blit(t, (dx + (self.W - t.get_width()) // 2, dy + 28))
         btn_w, btn_h = 100, 32
         gap = 12
-        bx = dx + (self.W - btn_w * 3 - gap * 2) // 2
+        n = len(self._buttons)
+        bx = dx + (self.W - btn_w * n - gap * (n - 1)) // 2
         by = dy + self.H - btn_h - 22
-        for k, label, primary in [
-            ('save',    'Save',    True),
-            ('discard', 'Discard', False),
-            ('cancel',  'Cancel',  False),
-        ]:
+        for k, label, primary in self._buttons:
             r = pygame.Rect(bx, by, btn_w, btn_h)
             self._rects[k] = r
             col = BTN_HOV if self._hov == k else (BTN_BG if primary else DROP_BG)
@@ -888,6 +929,49 @@ class Launcher:
             self._shuffled_win = ShuffledWindow(shuffled_data,
                                                 position=self._load_shuffled_pos())
 
+    def _delete_level(self, name):
+        m = re.match(r'level_(\d+)$', name)
+        if not m:
+            return
+        num = int(m.group(1))
+
+        deleted_path = os.path.join(LEVELS_DIR, f"{name}.json")
+        if self._inline_editor and self._inline_editor._file_path == deleted_path:
+            self._inline_editor = None
+            if self._shuffled_win:
+                self._shuffled_win.close()
+                self._shuffled_win = None
+
+        for suffix in ('.json', '.png', '_shuffled.png'):
+            p = os.path.join(LEVELS_DIR, f"{name}{suffix}")
+            if os.path.exists(p):
+                os.remove(p)
+
+        try:
+            files = os.listdir(LEVELS_DIR)
+        except Exception:
+            files = []
+        nums = sorted(
+            int(re.match(r'level_(\d+)\.json$', f).group(1))
+            for f in files if re.match(r'level_\d+\.json$', f)
+        )
+        for n in (x for x in nums if x > num):
+            old_stem = f"level_{n:03d}"
+            new_stem = f"level_{n - 1:03d}"
+            for suffix in ('.json', '.png', '_shuffled.png'):
+                old_p = os.path.join(LEVELS_DIR, f"{old_stem}{suffix}")
+                new_p = os.path.join(LEVELS_DIR, f"{new_stem}{suffix}")
+                if os.path.exists(old_p):
+                    os.rename(old_p, new_p)
+            old_json = os.path.join(LEVELS_DIR, f"{old_stem}.json")
+            if self._inline_editor and self._inline_editor._file_path == old_json:
+                self._inline_editor._file_path = os.path.join(LEVELS_DIR, f"{new_stem}.json")
+
+        cur_panel = self._actions[self._sel].panel
+        if cur_panel:
+            cur_panel._refresh()
+        self.status = f"Deleted: {name}"
+
     def _save_prefs(self):
         try:
             with open(PREFS_FILE) as f:
@@ -1138,6 +1222,10 @@ class Launcher:
         if self._inline_editor and action.panel:
             self._inline_editor.draw_overlay(self.screen)
 
+        # level list "Delete" context menu
+        if action.panel:
+            action.panel.draw_context_menu(self.screen, self.font)
+
         # confirm dialog — drawn last, blocks everything below
         if self._confirm_dialog:
             self._confirm_dialog.draw(self.screen)
@@ -1173,7 +1261,7 @@ class Launcher:
                         self._pending_cancel  = None
                         if result == 'save' and self._inline_editor:
                             self._do_save_editor()
-                        if result in ('save', 'discard') and action:
+                        if result in ('save', 'discard', 'delete') and action:
                             action()
                         elif result == 'cancel' and cancel:
                             cancel()
@@ -1278,19 +1366,30 @@ class Launcher:
                         if cur_action.panel:
                             panel_result = cur_action.panel.handle(event)
                             if panel_result is not None:
-                                level_name = panel_result
-                                prev_sel   = cur_action.panel._prev_selected
-                                def _open(name=level_name):
-                                    self._open_editor(name)
-                                if self._has_unsaved_changes():
-                                    panel_ref = cur_action.panel
-                                    self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
-                                    self._pending_action = _open
-                                    self._pending_cancel = (
-                                        lambda ps=prev_sel, p=panel_ref: setattr(p, 'selected', ps)
+                                kind, level_name = panel_result
+                                if kind == 'open':
+                                    prev_sel = cur_action.panel._prev_selected
+                                    def _open(name=level_name):
+                                        self._open_editor(name)
+                                    if self._has_unsaved_changes():
+                                        panel_ref = cur_action.panel
+                                        self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
+                                        self._pending_action = _open
+                                        self._pending_cancel = (
+                                            lambda ps=prev_sel, p=panel_ref: setattr(p, 'selected', ps)
+                                        )
+                                    else:
+                                        _open()
+                                elif kind == 'delete':
+                                    def _do_delete(name=level_name):
+                                        self._delete_level(name)
+                                    self._confirm_dialog = ConfirmDialog(
+                                        f"Delete {level_name}?",
+                                        buttons=[('delete', 'Delete', True),
+                                                 ('cancel', 'Cancel', False)],
                                     )
-                                else:
-                                    _open()
+                                    self._pending_action = _do_delete
+                                    self._pending_cancel = None
                             elif self._inline_editor:
                                 if self._save_rect.collidepoint(pos) and \
                                         self._has_unsaved_changes():
@@ -1311,7 +1410,9 @@ class Launcher:
                     continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                    if self._inline_editor and cur_action.panel:
+                    if cur_action.panel and cur_action.panel._panel_rect.collidepoint(event.pos):
+                        cur_action.panel.handle(event)
+                    elif self._inline_editor and cur_action.panel:
                         self._inline_editor.handle(event)
 
                 if not cur_action.panel:

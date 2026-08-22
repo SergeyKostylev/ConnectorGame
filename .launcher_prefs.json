@@ -5,15 +5,15 @@
   ],
   "selected": 1,
   "Generate v3": {
-    "rows": "15",
-    "cols": "15",
-    "batteries %": "19",
+    "rows": "12",
+    "cols": "12",
+    "batteries %": "16",
     "targets %": "20",
     "edit": true,
     "empty level": false
   },
   "Edit Levels": {
-    "list_col_w": 248,
+    "list_col_w": 277,
     "show_shuffled": true,
     "shuffled_pos": [
       37,
