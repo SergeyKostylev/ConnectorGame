@@ -136,9 +136,10 @@ def save_level_to(meet_map, shuffled_map, path, version):
 
 
 # ── orphan check result (tools/orphan_checker.py) stored in metadata ─────────
-# orphan_check:      "success" | "failed" | "incomplete"    (absent = not checked)
+# orphan_check:      "success" | "failed" | "limit achieved"  (absent = not checked;
+#                    older files may say "incomplete" for "limit achieved")
 # orphan_cells:      tiles that can stay unpowered in a win   (always present, "" if none)
-# orphan_unresolved: tiles the search gave up on              (when incomplete)
+# orphan_unresolved: tile that hit the search step limit — the check stops there
 
 ORPHAN_KEYS = ('orphan_check', 'orphan_cells', 'orphan_unresolved')
 
@@ -155,14 +156,20 @@ def _with_orphan_meta(meta, orphan):
     return out
 
 
+def _shapes(encoded_map):
+    """Encoded map without rotations: [["name:type", ...], ...]."""
+    return [[':'.join(c.split(':')[::2]) for c in row] for row in encoded_map or []]
+
+
 def _carry_orphan_meta(path, encoded_meet):
-    """Keep the stored check result only if the solved map is unchanged."""
+    """Keep the stored check result only if no tile's shape/type changed.
+    Rotations don't matter: the player rotates tiles freely anyway."""
     try:
         with open(path) as f:
             old = json.load(f)
     except Exception:
         return {}
-    if old.get('meet_map') != encoded_meet:
+    if _shapes(old.get('meet_map')) != _shapes(encoded_meet):
         return {}
     meta = old.get('metadata', {})
     return {k: meta[k] for k in ORPHAN_KEYS if k in meta}
@@ -192,7 +199,7 @@ def write_orphan_check(path, unused, unresolved):
     if unused:
         orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(unused)}
     elif unresolved:
-        orphan = {'orphan_check': 'incomplete'}
+        orphan = {'orphan_check': 'limit achieved'}
     else:
         orphan = {'orphan_check': 'success'}
     if unresolved:

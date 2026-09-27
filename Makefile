@@ -55,10 +55,17 @@ edit:
 
 # Check levels for tiles that can stay unpowered in a win; stores the result
 # in each level's metadata (orphan_check). No number — all levels, in parallel
+# Params: engine=c|py (default: C when built, else Python)
 # make check-orphans
 # make check-orphans 41
+# make check-orphans engine=py 41
 check-orphans:
-	python tools/orphan_checker.py --write $(filter-out $@,$(MAKECMDGOALS))
+	python tools/orphan_checker.py --write $(if $(engine),--engine $(engine),) $(filter-out $@,$(MAKECMDGOALS))
+
+# Build the C orphan solver (tools/orphan_solver) used by the checker / launcher
+# make build-solver
+build-solver:
+	cc -O2 -o tools/orphan_solver tools/orphan_solver.c
 
 help:
 	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z0-9_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile

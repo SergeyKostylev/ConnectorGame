@@ -2,15 +2,15 @@
   "metadata": {
     "size": "6x8",
     "generator": "v3",
-    "battery": "4 (8.3%)",
-    "target": "11 (22.9%)",
-    "pipeline": "33 (68.8%)",
+    "battery": "5 (10.4%)",
+    "target": "12 (25.0%)",
+    "pipeline": "31 (64.6%)",
     "wall": "0 (0.0%)",
-    "orphan_check": "failed",
-    "orphan_cells": "(0,0) (0,1) (0,2) (1,0) (1,2) (2,2)"
+    "orphan_check": "success",
+    "orphan_cells": ""
   },
   "meet_map": [
-    ["g:90:pipeline",  "l:90:pipeline",  "g:180:pipeline", "i:0:target",     "g:90:pipeline",  "i:90:target",    "i:0:battery",    "i:0:target"    ],
+    ["g:90:pipeline",  "i:90:target",    "i:0:battery",    "i:0:target",     "g:90:pipeline",  "i:90:target",    "i:0:battery",    "i:0:target"    ],
     ["l:0:pipeline",   "i:0:target",     "l:0:pipeline",   "l:0:pipeline",   "g:0:pipeline",   "l:90:pipeline",  "x:0:pipeline",   "g:270:pipeline"],
     ["i:180:battery",  "g:0:pipeline",   "g:270:pipeline", "t:270:pipeline", "t:0:pipeline",   "i:90:battery",   "g:0:pipeline",   "g:180:pipeline"],
     ["i:270:target",   "g:180:pipeline", "i:270:target",   "g:270:pipeline", "g:0:pipeline",   "g:180:pipeline", "i:0:target",     "l:0:pipeline"  ],
@@ -18,7 +18,7 @@
     ["i:270:target",   "g:270:pipeline", "i:270:target",   "t:180:pipeline", "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "i:90:target"   ]
   ],
   "shuffled_map": [
-    ["g:90:pipeline",  "l:90:pipeline",  "g:270:pipeline", "i:270:target",   "g:0:pipeline",   "i:0:target",     "i:180:battery",  "i:180:target"  ],
+    ["g:90:pipeline",  "i:90:target",    "i:270:battery",  "i:270:target",   "g:0:pipeline",   "i:0:target",     "i:180:battery",  "i:180:target"  ],
     ["l:90:pipeline",  "i:90:target",    "l:90:pipeline",  "l:0:pipeline",   "g:0:pipeline",   "l:0:pipeline",   "x:270:pipeline", "g:180:pipeline"],
     ["i:90:battery",   "g:270:pipeline", "g:180:pipeline", "t:180:pipeline", "t:180:pipeline", "i:0:battery",    "g:180:pipeline", "g:270:pipeline"],
     ["i:180:target",   "g:0:pipeline",   "i:0:target",     "g:90:pipeline",  "g:0:pipeline",   "g:180:pipeline", "i:270:target",   "l:90:pipeline" ],

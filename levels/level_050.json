@@ -6,6 +6,7 @@
     "target": "43 (29.9%)",
     "pipeline": "91 (63.2%)",
     "wall": "0 (0.0%)",
+    "orphan_check": "success",
     "orphan_cells": ""
   },
   "meet_map": [

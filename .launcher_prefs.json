@@ -1,7 +1,7 @@
 {
   "window_size": [
-    1133,
-    529
+    1380,
+    690
   ],
   "selected": 1,
   "Generate v3": {
@@ -10,7 +10,8 @@
     "batteries %": "23",
     "targets %": "30",
     "edit": true,
-    "empty level": false
+    "empty level": false,
+    "check orphans": false
   },
   "Edit Levels": {
     "list_col_w": 276,
@@ -18,6 +19,14 @@
     "shuffled_pos": [
       36,
       349
+    ],
+    "parallel": "5",
+    "filters": [
+      "failed",
+      "limit achieved"
     ]
+  },
+  "Check Orphans": {
+    "parallel": ""
   }
 }
