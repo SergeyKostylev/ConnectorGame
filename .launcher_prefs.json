@@ -7,8 +7,8 @@
   "Generate v3": {
     "rows": "12",
     "cols": "12",
-    "batteries %": "16",
-    "targets %": "20",
+    "batteries %": "23",
+    "targets %": "30",
     "edit": true,
     "empty level": false
   },
@@ -16,8 +16,8 @@
     "list_col_w": 277,
     "show_shuffled": true,
     "shuffled_pos": [
-      37,
-      350
+      36,
+      349
     ]
   }
 }

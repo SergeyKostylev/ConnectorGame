@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "size": "5x5",
+    "generator": "v3",
+    "battery": "2 (8.0%)",
+    "target": "6 (24.0%)",
+    "pipeline": "17 (68.0%)",
+    "wall": "0 (0.0%)"
+  },
+  "meet_map": [
+    ["i:0:target",     "g:90:pipeline",  "l:90:pipeline",  "t:0:pipeline",   "i:90:battery"  ],
+    ["t:270:pipeline", "g:270:pipeline", "i:270:target",   "t:180:pipeline", "g:180:pipeline"],
+    ["i:180:target",   "i:270:target",   "l:90:pipeline",  "g:180:pipeline", "l:0:pipeline"  ],
+    ["g:90:pipeline",  "g:180:pipeline", "g:90:pipeline",  "g:270:pipeline", "l:0:pipeline"  ],
+    ["i:180:target",   "g:0:pipeline",   "t:180:pipeline", "i:90:battery",   "i:180:target"  ]
+  ],
+  "shuffled_map": [
+    ["i:90:target",    "g:180:pipeline", "l:90:pipeline",  "t:0:pipeline",   "i:90:battery"  ],
+    ["t:270:pipeline", "g:0:pipeline",   "i:270:target",   "t:180:pipeline", "g:90:pipeline" ],
+    ["i:90:target",    "i:0:target",     "l:90:pipeline",  "g:90:pipeline",  "l:180:pipeline"],
+    ["g:180:pipeline", "g:0:pipeline",   "g:180:pipeline", "g:0:pipeline",   "l:180:pipeline"],
+    ["i:180:target",   "g:90:pipeline",  "t:0:pipeline",   "i:180:battery",  "i:90:target"   ]
+  ]
+}

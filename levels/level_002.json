@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "size": "2x3",
+    "generator": "v3",
+    "battery": "1 (16.7%)",
+    "target": "2 (33.3%)",
+    "pipeline": "3 (50.0%)",
+    "wall": "0 (0.0%)"
+  },
+  "meet_map": [
+    ["g:90:pipeline",  "t:0:pipeline",   "g:180:pipeline"],
+    ["i:180:target",   "i:180:battery",  "i:180:target"  ]
+  ],
+  "shuffled_map": [
+    ["g:0:pipeline",   "t:90:pipeline",  "g:270:pipeline"],
+    ["i:180:target",   "i:270:battery",  "i:270:target"  ]
+  ]
+}

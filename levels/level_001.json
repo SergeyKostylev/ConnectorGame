@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "size": "1x3",
+    "generator": "v3",
+    "battery": "1 (33.3%)",
+    "target": "1 (33.3%)",
+    "pipeline": "1 (33.3%)",
+    "wall": "0 (0.0%)"
+  },
+  "meet_map": [
+    ["i:270:battery", "l:90:pipeline", "i:90:target"  ]
+  ],
+  "shuffled_map": [
+    ["i:270:battery",  "l:270:pipeline", "i:180:target"  ]
+  ]
+}

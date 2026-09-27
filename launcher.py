@@ -214,16 +214,12 @@ class LevelListPanel:
         self.editing      = -1   # index of level whose edit panel is open
         self._prev_selected = -1
         self._rects       = []
+        self._delete_rects = []
         self._edit_rects  = []
         self._scroll          = 0    # pixel offset
         self._scroll_to_bottom = True
         self._list_h          = 0
         self._font_sm     = None
-        self._panel_rect  = pygame.Rect(0, 0, 0, 0)
-        self._ctx_visible = False
-        self._ctx_target  = None   # level name the context menu applies to
-        self._ctx_rect    = pygame.Rect(0, 0, 0, 0)
-        self._ctx_hov     = False
         self._refresh()
 
     def _refresh(self):
@@ -251,32 +247,15 @@ class LevelListPanel:
 
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self._ctx_visible:
-                hit    = self._ctx_rect.collidepoint(event.pos)
-                target = self._ctx_target
-                self._ctx_visible = False
-                self._ctx_target  = None
-                return ('delete', target) if hit else None
+            for r, li in self._delete_rects:
+                if r.collidepoint(event.pos):
+                    return ('delete', self._levels[li]['name'])
             for r, li in self._rects:
                 if r.collidepoint(event.pos):
                     self._prev_selected = self.selected
                     self.selected = li
                     self.editing  = li
                     return ('open', self._levels[li]['name'])
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-            self._ctx_visible = False
-            if self._panel_rect.collidepoint(event.pos):
-                for r, li in self._rects:
-                    if r.collidepoint(event.pos):
-                        self._ctx_target = self._levels[li]['name']
-                        w, h = 120, 30
-                        screen = pygame.display.get_surface()
-                        sw, sh = screen.get_size() if screen else (10000, 10000)
-                        cx = min(event.pos[0], sw - w)
-                        cy = min(event.pos[1], sh - h)
-                        self._ctx_rect = pygame.Rect(cx, cy, w, h)
-                        self._ctx_visible = True
-                        break
         elif event.type == pygame.MOUSEWHEEL:
             max_scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll = max(0, min(max_scroll, self._scroll - event.y * 20))
@@ -285,8 +264,6 @@ class LevelListPanel:
     def draw(self, surf, font, x, y, w, h):
         if self._font_sm is None:
             self._font_sm = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 12)
-
-        self._panel_rect = pygame.Rect(x, y, w, h)
 
         SB_W = 8  # scrollbar width
         list_w = w - SB_W - 2
@@ -299,6 +276,7 @@ class LevelListPanel:
             self._scroll = max(0, len(self._levels) * self.ITEM_H - self._list_h)
             self._scroll_to_bottom = False
         self._rects  = []
+        self._delete_rects = []
         clip = surf.get_clip()
         surf.set_clip(pygame.Rect(x + 1, y + 1, list_w, h - 2))
 
@@ -322,6 +300,18 @@ class LevelListPanel:
             else:
                 bg = INPUT_BG
             pygame.draw.rect(surf, bg, r)
+
+            # delete button — small square, vertically centered on the right of the row
+            btn_sz = 22
+            del_rect = pygame.Rect(r.right - pad - btn_sz, ry + (ih - btn_sz) // 2, btn_sz, btn_sz)
+            self._delete_rects.append((del_rect, li))
+            del_hov = del_rect.collidepoint(mouse)
+            pygame.draw.rect(surf, (120, 55, 55) if del_hov else (70, 45, 45),
+                             del_rect, border_radius=4)
+            pygame.draw.rect(surf, BOR, del_rect, 1, border_radius=4)
+            xt = font.render("x", True, FG)
+            surf.blit(xt, (del_rect.centerx - xt.get_width() // 2,
+                           del_rect.centery - xt.get_height() // 2))
 
             # name
             ty = ry + pad
@@ -362,17 +352,6 @@ class LevelListPanel:
         if 0 <= self.selected < len(self._levels):
             return self._levels[self.selected]['name']
         return None
-
-    def draw_context_menu(self, surf, font):
-        if not self._ctx_visible:
-            return
-        hov = self._ctx_rect.collidepoint(pygame.mouse.get_pos())
-        bg  = DROP_HOV if hov else DROP_BG
-        pygame.draw.rect(surf, bg, self._ctx_rect, border_radius=4)
-        pygame.draw.rect(surf, BOR, self._ctx_rect, 1, border_radius=4)
-        t = font.render("Delete", True, FG)
-        surf.blit(t, (self._ctx_rect.centerx - t.get_width() // 2,
-                      self._ctx_rect.centery - t.get_height() // 2))
 
 
 # ── action definition ─────────────────────────────────────────────────────────
@@ -1222,10 +1201,6 @@ class Launcher:
         if self._inline_editor and action.panel:
             self._inline_editor.draw_overlay(self.screen)
 
-        # level list "Delete" context menu
-        if action.panel:
-            action.panel.draw_context_menu(self.screen, self.font)
-
         # confirm dialog — drawn last, blocks everything below
         if self._confirm_dialog:
             self._confirm_dialog.draw(self.screen)
@@ -1410,9 +1385,7 @@ class Launcher:
                     continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                    if cur_action.panel and cur_action.panel._panel_rect.collidepoint(event.pos):
-                        cur_action.panel.handle(event)
-                    elif self._inline_editor and cur_action.panel:
+                    if self._inline_editor and cur_action.panel:
                         self._inline_editor.handle(event)
 
                 if not cur_action.panel:
