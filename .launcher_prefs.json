@@ -23,8 +23,11 @@
     "parallel": "5",
     "filters": [
       "failed",
-      "limit achieved"
-    ]
+      "limit achieved",
+      "running",
+      "unchecked"
+    ],
+    "engine": "c"
   },
   "Check Orphans": {
     "parallel": ""

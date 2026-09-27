@@ -55,14 +55,13 @@ edit:
 
 # Check levels for tiles that can stay unpowered in a win; stores the result
 # in each level's metadata (orphan_check). No number — all levels, in parallel
-# Params: engine=c|py (default: C when built, else Python)
+# Needs the C solver: make build-solver
 # make check-orphans
 # make check-orphans 41
-# make check-orphans engine=py 41
 check-orphans:
-	python tools/orphan_checker.py --write $(if $(engine),--engine $(engine),) $(filter-out $@,$(MAKECMDGOALS))
+	python tools/orphan_checker.py --write $(filter-out $@,$(MAKECMDGOALS))
 
-# Build the C orphan solver (tools/orphan_solver) used by the checker / launcher
+# Build the C orphan solver (tools/orphan_solver) — required by the orphan check
 # make build-solver
 build-solver:
 	cc -O2 -o tools/orphan_solver tools/orphan_solver.c

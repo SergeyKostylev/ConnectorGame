@@ -68,14 +68,6 @@ def orphan_status(meta):
     return 'limit achieved' if st == 'incomplete' else st
 
 
-SOLVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'orphan_solver')
-
-
-def c_solver_built():
-    """tools/orphan_solver exists (make build-solver)."""
-    return os.path.isfile(SOLVER_BIN) and os.access(SOLVER_BIN, os.X_OK)
-
-
 # level list filters: key -> checkbox label
 LEVEL_FILTERS = {'success': 'success', 'failed': 'failed', 'limit achieved': 'limit',
                  'unchecked': 'unchecked', 'running': 'in progress'}
@@ -256,7 +248,6 @@ class LevelListPanel:
         self._checks      = {}   # level name -> LevelCheck
         # which levels the list shows, by orphan check state
         self.filters      = set(LEVEL_FILTERS)
-        self.engine       = 'py'   # 'c' | 'py' for new checks, set by the launcher
         # rows kept on screen although they no longer match the filters
         # (their state changed while shown); cleared by refresh / filter change
         self.pinned       = set()
@@ -320,7 +311,7 @@ class LevelListPanel:
             check.stop()
             del self._checks[name]
             return False
-        self._checks[name] = LevelCheck(os.path.join(LEVELS_DIR, f"{name}.json"), self.engine)
+        self._checks[name] = LevelCheck(os.path.join(LEVELS_DIR, f"{name}.json"))
         return True
 
     def needs_recheck_confirm(self, name):
@@ -868,7 +859,7 @@ class InlineEditor:
 
 # ── level check (separate process) ────────────────────────────────────────────
 
-def _check_worker(level_path, sys_path, out_queue, engine='auto'):
+def _check_worker(level_path, sys_path, out_queue):
     """Runs in a child process: tools/orphan_checker.py over one level,
     reporting progress per checked tile. The check stops at the first tile
     that hits the step limit (status 'limit achieved')."""
@@ -879,11 +870,11 @@ def _check_worker(level_path, sys_path, out_queue, engine='auto'):
     t0 = time.time()
     try:
         from orphan_checker import CheckJob
-        job = CheckJob(level_path, engine=engine)
+        job = CheckJob(level_path)
         if job.dangling:
             out_queue.put(('error', 'meet_map has unmatched connectors'))
             return
-        out_queue.put(('total', job.total, job.budget, job.engine))
+        out_queue.put(('total', job.total, job.budget))
         last = [0.0]
         def progress(cell, steps):
             # a new tile always reports; within a tile at most ~3 times a second
@@ -901,10 +892,9 @@ def _check_worker(level_path, sys_path, out_queue, engine='auto'):
 class LevelCheck:
     """A running or finished unused-tile check of one level file."""
 
-    def __init__(self, level_path, engine='auto'):
+    def __init__(self, level_path):
         import sys, multiprocessing
         self.mtime    = os.path.getmtime(level_path)
-        self.engine   = None     # 'c' / 'py' actually used, reported by the worker
         self.total    = 0
         self.done     = 0
         self.unused   = []   # tiles that can stay unpowered in a win state
@@ -922,7 +912,7 @@ class LevelCheck:
         self._queue = multiprocessing.Queue()
         self._proc  = multiprocessing.Process(
             target=_check_worker,
-            args=(level_path, [tools_dir] + sys.path, self._queue, engine),
+            args=(level_path, [tools_dir] + sys.path, self._queue),
             daemon=True,
         )
         self._proc.start()
@@ -938,7 +928,6 @@ class LevelCheck:
             if kind == 'total':
                 self.total = msg[1]
                 self.budget = msg[2] if len(msg) > 2 else 0
-                self.engine = msg[3] if len(msg) > 3 else None
             elif kind == 'tile':
                 import time as _time
                 if msg[1] != self.tile:
@@ -976,8 +965,7 @@ class LevelCheck:
         import time as _time
         fmt = lambda s: f"{int(s) // 60}:{int(s) % 60:02d}"
         now   = _time.time()
-        eng   = {'c': ' (C)', 'py': ' (Py)'}.get(self.engine, '')
-        badge = (f"Orphan check running{eng} · {self.done}/{self.total} · {fmt(now - self.started)}"
+        badge = (f"Orphan check running · {self.done}/{self.total} · {fmt(now - self.started)}"
                  if self.total else "Orphan check starting…")
         above = None
         if self.tile is not None:
@@ -1182,7 +1170,6 @@ class Launcher:
         # 0 = check all unchecked levels at once
         self._parallel_input = TextInput(str(min(4, cpus)), step=1, min_val=0, max_val=cpus)
         self._batch_rect     = pygame.Rect(0, 0, 0, 0)
-        self._engine_rect    = pygame.Rect(0, 0, 0, 0)
         self._filter_rects   = []   # [(rect, filter key)] above the level list
         self._orphan_rect    = pygame.Rect(0, 0, 0, 0)   # Orphan badge, when clickable
         self._orphan_hov     = False
@@ -1198,7 +1185,6 @@ class Launcher:
         self._resize_hov      = False
         self._resize_handle   = pygame.Rect(0, 0, 0, 0)
         self._actions       = self._build_actions()
-        self._levels_panel().engine = 'c' if c_solver_built() else 'py'   # prefs may override
         self._load_prefs()
 
     @staticmethod
@@ -1317,20 +1303,6 @@ class Launcher:
 
     def _levels_panel(self):
         return next(a.panel for a in self._actions if a.panel)
-
-    def _toggle_engine(self):
-        """C <-> Python for checks started from now on (running ones keep theirs)."""
-        panel = self._levels_panel()
-        if panel.engine == 'c':
-            panel.engine = 'py'
-            self.status = "Orphan checks: Python engine"
-        elif c_solver_built():
-            panel.engine = 'c'
-            self.status = "Orphan checks: C engine (tools/orphan_solver)"
-        else:
-            self.status = "C solver not built — run: make build-solver"
-            return
-        self._save_prefs()
 
     def _batch_parallel(self):
         """How many checks run at once; 0 in the field = no limit (all at once)."""
@@ -1640,7 +1612,6 @@ class Launcher:
         data["Edit Levels"]["list_col_w"]    = self._list_col_w
         data["Edit Levels"]["show_shuffled"] = self._show_shuffled
         data["Edit Levels"]["parallel"]      = self._parallel_input.value
-        data["Edit Levels"]["engine"]        = self._levels_panel().engine
         data["Edit Levels"]["filters"]       = sorted(self._levels_panel().filters)
         for action in self._actions:
             data[action.label] = data.get(action.label, {})
@@ -1667,9 +1638,6 @@ class Launcher:
         self._list_col_w    = edit_prefs.get("list_col_w", None)
         self._show_shuffled = edit_prefs.get("show_shuffled", True)
         self._parallel_input.value = edit_prefs.get("parallel", "")
-        # C when built, unless Python was chosen last time
-        eng = edit_prefs.get("engine", "c")
-        self._levels_panel().engine = 'c' if eng == 'c' and c_solver_built() else 'py'
         saved = edit_prefs.get("filters")
         if saved is not None:
             if 'checked' in saved:   # before success/failed/limit were split
@@ -1807,9 +1775,8 @@ class Launcher:
                                   self._update_rect.centery - ut.get_height() // 2))
             # batch orphan check of unchecked levels + how many run in parallel
             num_w = STEP_W * 2 + 36
-            eng_w = 40
             by    = self._update_rect.bottom + PAD
-            self._batch_rect = pygame.Rect(right_x, by, col_w - num_w - eng_w - PAD, RUN_H)
+            self._batch_rect = pygame.Rect(right_x, by, col_w - num_w - PAD // 2, RUN_H)
             if self._batch:
                 b_col = (140, 105, 50) if self._batch_hov else (110, 85, 40)
             else:
@@ -1825,18 +1792,6 @@ class Launcher:
             self._parallel_input.draw(self.screen, self.font,
                                       self._batch_rect.right + PAD // 2,
                                       by + (RUN_H - INPUT_H) // 2, num_w)
-            # search engine for new checks: C (tools/orphan_solver) or Python
-            self._engine_rect = pygame.Rect(self._batch_rect.right + PAD // 2 + num_w + PAD // 2,
-                                            by + (RUN_H - INPUT_H) // 2, eng_w, INPUT_H)
-            is_c = self._levels_panel().engine == 'c'
-            e_col = (60, 90, 130) if is_c else INPUT_BG
-            if self._engine_rect.collidepoint(pygame.mouse.get_pos()):
-                e_col = tuple(min(255, v + 25) for v in e_col)
-            pygame.draw.rect(self.screen, e_col, self._engine_rect, border_radius=4)
-            pygame.draw.rect(self.screen, BOR_ACT if is_c else BOR, self._engine_rect, 1, border_radius=4)
-            et = self.font.render("C" if is_c else "Py", True, FG if is_c or c_solver_built() else FG_DIM)
-            self.screen.blit(et, (self._engine_rect.centerx - et.get_width() // 2,
-                                  self._engine_rect.centery - et.get_height() // 2))
             # resize handle — 10px hit area, 3px visual stripe at right edge of list column
             handle_rect = pygame.Rect(right_x + col_w - 5, HEADER_H + PAD, 10, list_h)
             self._resize_handle = handle_rect
@@ -2163,9 +2118,6 @@ class Launcher:
                             continue
                         if cur_action.panel and self._batch_rect.collidepoint(pos):
                             self._toggle_batch_check()
-                            continue
-                        if cur_action.panel and self._engine_rect.collidepoint(pos):
-                            self._toggle_engine()
                             continue
                         if cur_action.panel:
                             hit = next((k for r, k in self._filter_rects if r.collidepoint(pos)), None)

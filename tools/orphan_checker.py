@@ -1,11 +1,8 @@
 """
 Checks whether a level admits a "degenerate win": a rotation assignment where
 every target is still connected to a battery (the game's current win
-condition), but some pipeline tile is left unused.
-
-    --mode unpowered (default): the tile is not connected to any battery
-        (it may still be joined to other dead tiles) — shown grey in game.
-    --mode isolated: the tile has zero active connections (stricter).
+condition), but some pipeline tile is not connected to any battery (it may
+still be joined to other dead tiles) — shown grey in the game.
 
 Not brute force (4^N is intractable). Per candidate tile O:
     - each cell's SHAPE is fixed; only its ROTATION varies, over the
@@ -14,23 +11,22 @@ Not brute force (4^N is intractable). Per candidate tile O:
       box. This is sound because meet_map is tight (every open connector
       is matched), so solved components never touch each other. Re-routes
       that pass through a neighbouring component are NOT explored.
-    - backtracking with MRV ordering; after each step, prune if some target
-      can't reach a battery even optimistically (undecided sides assumed
-      open), or (unpowered mode) if O is already provably powered.
+    - backtracking; after each step, prune if some target can't reach a
+      battery even optimistically — power may only pass through a cell in
+      a way one of its rotations allows (a straight pipe can't turn) and
+      never through O — or if O is already provably powered.
     - a full assignment found = a real win state with O unused.
 
-Engines: the same search exists in Python (Solver below) and in C
-(tools/orphan_solver.c, built with `make build-solver`). --engine auto uses C
-when it is built. The step budget (DEFAULT_BUDGET / --budget) is passed to the
-C solver at run time — no rebuild needed after changing it.
+The search itself runs in C: tools/orphan_solver.c, built with
+`make build-solver`. This file prepares the levels, drives the solver and
+stores results. The step budget (DEFAULT_BUDGET / --budget) is passed to the
+solver at run time — no rebuild needed after changing it.
 
 Usage:
     python3 tools/orphan_checker.py levels/level_041.json
     python3 tools/orphan_checker.py 41 --write          # store result in metadata
     python3 tools/orphan_checker.py --write             # all levels, in parallel
     python3 tools/orphan_checker.py levels/level_041.json --cell 3,4
-    python3 tools/orphan_checker.py levels/level_041.json --mode isolated
-    python3 tools/orphan_checker.py 41 --engine py      # force the Python search
 """
 import argparse
 import functools
@@ -40,7 +36,6 @@ import os
 import subprocess
 import sys
 import time
-from collections import deque
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -48,7 +43,7 @@ import app.config as config
 
 # search steps allowed per tile; the first tile past it stops the check
 # (orphan_unresolved = that tile, level status: 'limit achieved')
-DEFAULT_BUDGET = 10_000_000
+DEFAULT_BUDGET = 1_000_000_000
 
 U, R, D, L = 0, 1, 2, 3
 OPP = {U: D, D: U, L: R, R: L}
@@ -136,218 +131,7 @@ class DSU:
             self.p[ra] = rb
 
 
-class Solver:
-    """Finds a full rotation assignment satisfying target->battery connectivity,
-    given a per-cell allowed-domain override (used to force a candidate cell
-    into an isolating pattern and forbid its neighbors from matching it)."""
-
-    def __init__(self, level: Level, domains, node_budget=300_000, unpowered=None,
-                 on_progress=None):
-        self.lv = level
-        self.domains = domains  # list[list[pattern]] per cell
-        self.node_budget = node_budget
-        self.nodes = 0
-        self.unpowered = unpowered  # cell idx that must end up NOT connected to any battery
-        self.on_progress = on_progress  # called with the step count every 1000 steps
-
-    def optimistic_ok(self, assigned):
-        """BFS over a graph where an edge is only excluded if it's provably
-        impossible (both fixed & mismatched, or one fixed-closed on that
-        side and the other side would need to match, or all remaining domain
-        options of an unassigned neighbor are closed on that side)."""
-        lv = self.lv
-
-        def side_state(idx, d):
-            # returns True/False/None (open/closed/unknown) for cell idx's side d
-            if idx in assigned:
-                return assigned[idx][d]
-            dom = self.domains[idx]
-            opens = any(p[d] for p in dom)
-            closes = any(not p[d] for p in dom)
-            if opens and not closes:
-                return True
-            if closes and not opens:
-                return False
-            return None  # could be either
-
-        def edge_possible(a, d):
-            b = lv.neighbors[a][d]
-            if b is None:
-                return False
-            # the candidate must stay unpowered, so no power path may pass through it
-            if self.unpowered is not None and self.unpowered in (a, b):
-                return False
-            sa = side_state(a, d)
-            sb = side_state(b, OPP[d])
-            if sa is False or sb is False:
-                return False
-            if sa is True and sb is True:
-                return True
-            return True  # unknown on at least one side -> optimistically possible
-
-        # union-find over optimistic edges (upper bound on connectivity)
-        dsu = DSU(lv.n)
-        # union-find over definite edges (lower bound on connectivity)
-        sure = DSU(lv.n) if self.unpowered is not None else None
-        for a in range(lv.n):
-            for d in (R, D):  # each undirected edge once
-                b = lv.neighbors[a][d]
-                if b is None:
-                    continue
-                if edge_possible(a, d):
-                    dsu.union(a, b)
-                # definite edges include the candidate's own (real) connections
-                if sure and side_state(a, d) is True and side_state(b, OPP[d]) is True:
-                    sure.union(a, b)
-        battery_roots = {dsu.find(b) for b in lv.batteries}
-        if not all(dsu.find(t) in battery_roots for t in lv.targets):
-            return False
-        if not self._directional_reach(assigned):
-            return False
-        if sure:
-            o = sure.find(self.unpowered)
-            if any(sure.find(b) == o for b in lv.batteries):
-                return False  # candidate is already provably powered
-        return True
-
-    def _directional_reach(self, assigned):
-        """Stronger relaxation: power travels cell to cell; entering a cell
-        from side e it can only leave through side x if one of the cell's
-        remaining rotations opens both e and x (a straight pipe can't turn,
-        a corner must turn, a lamp/battery is a dead end). Every lamp must
-        still be reachable this way, avoiding the tile that must stay unpowered."""
-        lv, O = self.lv, self.unpowered
-        pats = lambda i: (assigned[i],) if i in assigned else self.domains[i]
-        seen, reached, stack = set(), set(lv.batteries), []
-        def enter(n, e):
-            if n is None or n == O or (n, e) in seen:
-                return
-            if any(p[e] for p in pats(n)):
-                seen.add((n, e))
-                stack.append((n, e))
-        for b in lv.batteries:
-            for d in (U, R, D, L):
-                if any(p[d] for p in pats(b)):
-                    enter(lv.neighbors[b][d], OPP[d])
-        while stack:
-            n, e = stack.pop()
-            reached.add(n)
-            P = pats(n)
-            for x in (U, R, D, L):
-                if x != e and any(p[e] and p[x] for p in P):
-                    enter(lv.neighbors[n][x], OPP[x])
-        return all(t in reached for t in lv.targets)
-
-    def solve(self, forced=None):
-        """forced: dict idx -> pattern (already decided, e.g. the candidate O)."""
-        lv = self.lv
-        assigned = dict(forced) if forced else {}
-        order = [i for i in range(lv.n) if i not in assigned]
-
-        if not self.optimistic_ok(assigned):
-            return None
-
-        def pick_var():
-            best, best_dom = None, None
-            for i in order:
-                if i in assigned:
-                    continue
-                dom = self.domains[i]
-                if best is None or len(dom) < len(best_dom):
-                    best, best_dom = i, dom
-            return best
-
-        def backtrack():
-            self.nodes += 1
-            if self.nodes > self.node_budget:
-                raise TimeoutError
-            if self.on_progress and self.nodes % 1000 == 0:
-                self.on_progress(self.nodes)
-            if len(assigned) == lv.n:
-                return dict(assigned)
-            var = pick_var()
-            for pattern in self.domains[var]:
-                assigned[var] = pattern
-                if self.optimistic_ok(assigned):
-                    result = backtrack()
-                    if result is not None:
-                        return result
-                del assigned[var]
-            return None
-
-        try:
-            return backtrack()
-        except TimeoutError:
-            return 'TIMEOUT'
-
-
-def try_orphan(level: Level, cell_idx, node_budget, comp_id, orig_patterns,
-               mode='unpowered', verbose=False, on_progress=None):
-    """Searches for a win state in which cell O is unused.
-
-    mode='unpowered': O is not connected to any battery (it may still be
-        joined to other dead tiles) — this is what shows up grey in the game.
-    mode='isolated':  O has zero active connections (stricter, faster).
-
-    The search only varies cells of O's own component (as given by the
-    source solution) and pins everything else to its solved rotation.
-    Any witness found is therefore a real win state; a "no" means no local
-    re-routing exists (re-routing through a neighbouring component is not
-    explored)."""
-    base = [level.base_domain(i) for i in range(level.n)]
-    i, j = divmod(cell_idx, level.cols)
-    if level.type[i][j] != 'pipeline' or level.name[i][j] == 'w':
-        return None  # walls are supposed to have 0 connectors; not a candidate
-
-    my_comp = comp_id[cell_idx]
-
-    if mode == 'unpowered':
-        domains = [([orig_patterns[k]] if comp_id[k] != my_comp else list(base[k]))
-                   for k in range(level.n)]
-        solver = Solver(level, domains, node_budget=node_budget, unpowered=cell_idx,
-                        on_progress=on_progress)
-        result = solver.solve()
-        if verbose:
-            print(f"    cell {i},{j}: "
-                  f"{'TIMEOUT' if result == 'TIMEOUT' else ('FOUND' if result else 'infeasible')} "
-                  f"(nodes={solver.nodes})")
-        return result
-
-    for pattern in base[cell_idx]:
-        # cells outside O's component: pin to their original pattern (safe, see above)
-        domains = [([orig_patterns[k]] if comp_id[k] != my_comp else list(base[k]))
-                   for k in range(level.n)]
-        domains[cell_idx] = [pattern]
-        feasible = True
-        for d in (U, R, D, L):
-            if not pattern[d]:
-                continue
-            nb = level.neighbors[cell_idx][d]
-            if nb is None:
-                continue
-            side = OPP[d]
-            filtered = [p for p in domains[nb] if not p[side]]
-            if not filtered:
-                feasible = False
-                break
-            domains[nb] = filtered
-        if not feasible:
-            continue
-
-        solver = Solver(level, domains, node_budget=node_budget, on_progress=on_progress)
-        result = solver.solve(forced={cell_idx: pattern})
-        if verbose:
-            print(f"    cell {i},{j} pattern={pattern}: "
-                  f"{'TIMEOUT' if result == 'TIMEOUT' else ('FOUND' if result else 'infeasible')} "
-                  f"(nodes={solver.nodes})")
-        if result == 'TIMEOUT':
-            return 'TIMEOUT'
-        if result:
-            return result
-    return None
-
-
-# ── C engine: tools/orphan_solver (same search, compiled) ────────────────────
+# ── the search: tools/orphan_solver (C) ──────────────────────────────────────
 
 SOLVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orphan_solver')
 
@@ -355,13 +139,6 @@ SOLVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orphan_so
 def c_engine_available():
     """True once `make build-solver` has produced tools/orphan_solver."""
     return os.path.isfile(SOLVER_BIN) and os.access(SOLVER_BIN, os.X_OK)
-
-
-def resolve_engine(engine):
-    """'auto' -> 'c' when the C solver is built, else 'py'."""
-    if engine == 'auto':
-        return 'c' if c_engine_available() else 'py'
-    return engine
 
 
 def _mask(pattern):
@@ -374,10 +151,14 @@ def _pattern(mask):
 
 class CSolver:
     """tools/orphan_solver running as a child process for one CheckJob.run().
-    try_orphan() mirrors the Python try_orphan() in unpowered mode; the step
-    budget is sent with every query, so changing it needs no rebuild."""
+    try_orphan(): is there a win state with the candidate tile unpowered?
+    Returns None (no), 'TIMEOUT' (step budget exceeded) or the win state as
+    {cell index: pattern}. The step budget is sent with every query, so
+    changing it needs no rebuild."""
 
     def __init__(self):
+        if not c_engine_available():
+            raise RuntimeError("C solver not built — run: make build-solver")
         self.proc = subprocess.Popen([SOLVER_BIN], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, text=True, bufsize=1)
 
@@ -445,25 +226,22 @@ def patterns_of(cells):
     return out
 
 
-def unused_in(level, assignment, comp_mask, mode):
+def unused_in(level, assignment, comp_mask):
     """Pipeline cells of the searched component (comp_mask == 0) that a win
-    state `assignment` (idx -> pattern) leaves unpowered / isolated."""
+    state `assignment` (idx -> pattern) leaves unpowered."""
     dsu = DSU(level.n)
-    deg = [0] * level.n
     for a, pa in assignment.items():
         for d in (R, D):
             b = level.neighbors[a][d]
             if b is not None and b in assignment and pa[d] and assignment[b][OPP[d]]:
                 dsu.union(a, b)
-                deg[a] += 1
-                deg[b] += 1
     powered = {dsu.find(b) for b in level.batteries}
     out = []
     for x in range(level.n):
         i, j = divmod(x, level.cols)
         if comp_mask[x] != 0 or level.type[i][j] != 'pipeline' or level.name[i][j] == 'w':
             continue
-        if (deg[x] == 0) if mode == 'isolated' else (dsu.find(x) not in powered):
+        if dsu.find(x) not in powered:
             out.append(x)
     return out
 
@@ -472,11 +250,8 @@ class CheckJob:
     """A prepared check of one level. `total` candidate tiles; iterate
     `run()` to check them one by one (lets callers show progress / stop)."""
 
-    def __init__(self, level_path, budget=DEFAULT_BUDGET, mode='unpowered', only_cell=None,
-                 engine='auto'):
-        self.budget, self.mode = budget, mode
-        # 'py' | 'c' — the C solver only implements unpowered mode
-        self.engine = resolve_engine(engine) if mode == 'unpowered' else 'py'
+    def __init__(self, level_path, budget=DEFAULT_BUDGET, only_cell=None):
+        self.budget = budget
         cells = load_level(level_path, 'meet_map')
         level = Level(cells)
         self.level = level
@@ -520,18 +295,17 @@ class CheckJob:
     def total(self):
         return len(self.candidates)
 
-    def run(self, verbose=False, on_progress=None):
+    def run(self, on_progress=None):
         """Yields ((row, col), shape, status), status in 'ok' | 'unused' | 'timeout'.
         on_progress((row, col), steps) is called when a tile starts (steps=0)
-        and every 1000 search steps while it is being checked."""
-        csolver = CSolver() if self.engine == 'c' else None
+        and every 65536 search steps while it is being checked."""
+        csolver = CSolver()
         try:
-            yield from self._run(verbose, on_progress, csolver)
+            yield from self._run(on_progress, csolver)
         finally:
-            if csolver:
-                csolver.close()
+            csolver.close()
 
-    def _run(self, verbose, on_progress, csolver):
+    def _run(self, on_progress, csolver):
         known_unused = set()   # (row, col) proven by an earlier witness
         for (gi, gj), sub, k, sub_comp, sub_pats in self.candidates:
             shape = sub.name[k // sub.cols][k % sub.cols]
@@ -541,16 +315,12 @@ class CheckJob:
             if on_progress:
                 on_progress((gi, gj), 0)
             progress = (lambda n, c=(gi, gj): on_progress(c, n)) if on_progress else None
-            if csolver:
-                result = csolver.try_orphan(sub, k, self.budget, sub_comp, sub_pats,
-                                            on_progress=progress)
-            else:
-                result = try_orphan(sub, k, self.budget, sub_comp, sub_pats,
-                                    mode=self.mode, verbose=verbose, on_progress=progress)
+            result = csolver.try_orphan(sub, k, self.budget, sub_comp, sub_pats,
+                                        on_progress=progress)
             if result and result != 'TIMEOUT':
                 r0, c0 = gi - k // sub.cols, gj - k % sub.cols
                 known_unused |= {(r0 + x // sub.cols, c0 + x % sub.cols)
-                                 for x in unused_in(sub, result, sub_comp, self.mode)}
+                                 for x in unused_in(sub, result, sub_comp)}
             status = 'timeout' if result == 'TIMEOUT' else ('unused' if result else 'ok')
             yield (gi, gj), shape, status
             if status == 'timeout':
@@ -566,12 +336,12 @@ def level_paths(args):
             for a in args]
 
 
-def check_file(path, budget=DEFAULT_BUDGET, engine='auto'):
+def check_file(path, budget=DEFAULT_BUDGET):
     """Full unpowered-mode check of one level file (for batch runs)."""
     t0 = time.time()
     try:
         mtime = os.path.getmtime(path)
-        job = CheckJob(path, budget, engine=engine)
+        job = CheckJob(path, budget)
         if job.dangling:
             return {'path': path, 'error': 'meet_map has unmatched connectors'}
         unused, timeouts = [], []
@@ -624,17 +394,14 @@ def main():
     ap.add_argument('--cell', default=None, help='row,col to test a single cell')
     ap.add_argument('--budget', type=int, default=DEFAULT_BUDGET,
                     help='search steps allowed per tile before it counts as unresolved')
-    ap.add_argument('--verbose', action='store_true')
-    ap.add_argument('--mode', default='unpowered', choices=['unpowered', 'isolated'])
-    ap.add_argument('--engine', default='auto', choices=['auto', 'py', 'c'],
-                    help='search engine; auto = C when built (make build-solver), else Python')
+    ap.add_argument('--verbose', action='store_true', help='also list tiles that are fine')
     args = ap.parse_args()
     paths = level_paths(args.levels)
-    if args.engine == 'c' and not c_engine_available():
+    if not c_engine_available():
         ap.error('C solver not built — run: make build-solver')
 
-    if args.write and (args.cell or args.mode != 'unpowered'):
-        ap.error('--write stores full unpowered checks only (no --cell / --mode isolated)')
+    if args.write and args.cell:
+        ap.error('--write stores full checks only (no --cell)')
 
     if len(paths) > 1:
         if args.cell:
@@ -643,8 +410,7 @@ def main():
         t0 = time.time()
         print(f"Checking {len(paths)} levels, {args.jobs} in parallel...")
         with multiprocessing.Pool(args.jobs) as pool:
-            for res in pool.imap_unordered(functools.partial(check_file, budget=args.budget,
-                                                             engine=args.engine), paths):
+            for res in pool.imap_unordered(functools.partial(check_file, budget=args.budget), paths):
                 print(store_result(res) if args.write else summarize(res), flush=True)
         print(f"Done in {time.time() - t0:.1f}s")
         return
@@ -652,9 +418,8 @@ def main():
     path = paths[0]
     t0 = time.time()
     only = tuple(map(int, args.cell.split(','))) if args.cell else None
-    job = CheckJob(path, args.budget, args.mode, only, engine=args.engine)
+    job = CheckJob(path, args.budget, only)
     lv = job.level
-    print(f"Engine: {'C (tools/orphan_solver)' if job.engine == 'c' else 'Python'}")
     print(f"Grid {lv.rows}x{lv.cols}, "
           f"{len(lv.batteries)} batteries, {len(lv.targets)} targets, "
           f"{lv.n - len(lv.batteries) - len(lv.targets)} pipeline cells")
@@ -666,14 +431,14 @@ def main():
 
     mtime = os.path.getmtime(path)
     unused, timeouts = [], []
-    for (gi, gj), shape, status in job.run(verbose=args.verbose):
+    for (gi, gj), shape, status in job.run():
         if status == 'timeout':
             timeouts.append((gi, gj))
             print(f"cell ({gi},{gj}) [{shape}]: search budget exceeded, inconclusive")
         elif status == 'unused':
             unused.append((gi, gj))
             print(f"cell ({gi},{gj}) [{shape}]: WITNESS FOUND — a valid win state "
-                  f"exists where this tile is unused ({args.mode})")
+                  f"exists where this tile is unpowered")
         elif args.verbose:
             print(f"cell ({gi},{gj}) [{shape}]: can't be left unused")
 

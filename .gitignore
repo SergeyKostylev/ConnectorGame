@@ -171,3 +171,5 @@ cython_debug/
 .pypirc
 
 .tmp
+# compiled orphan solver (make build-solver)
+tools/orphan_solver
