@@ -20,14 +20,14 @@ Note: `requirements.txt` also carries `PyYAML` and `networkx`, which are no long
 
 Run via `make <target>` (see `Makefile`; `make help` lists all with descriptions):
 
-- `make launch` — open the GUI launcher (`launcher.py`): generate levels and edit them, all in one pygame window.
+- `make launch` — open the GUI launcher (`launcher.py`): generate levels and edit them, all in one pygame window. Same as `python main.py` with no arguments.
 - `make generate-level-v3 rows=R cols=C batteries=N targets_percent=P run=1` — generate a level with the current generator (V3), save JSON + PNG to `levels/`.
 - `make generate-level-v2 rows=R cols=C batteries=N run=1` — generate with V2 (no target-density control).
 - `make generate-level-v1 rows=R cols=C` — generate with V1 (pipeline/missing only, no battery/target).
 - `make level-run [N]` — run a saved level from `levels/` (latest if no arg). Add `--shuffled` via `python main.py N --shuffled` to play the shuffled variant directly.
 - `make level-run-shuffled [N]` — run the shuffled variant.
 - `make edit [N]` — open the standalone tile editor (`edit.py`) for a level (latest if no arg).
-- `make run-default` — run the hardcoded example level in `app/services/helper.py::get_default_figure_map`.
+- `make run-default` — play the latest level (`python main.py latest`).
 
 There is no test suite, linter, or CI config in this repo.
 

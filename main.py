@@ -96,11 +96,19 @@ def log(params: dict):
 
 
 if __name__ == '__main__':
+    # python main.py                  -> the launcher (generate / edit / check levels)
+    # python main.py latest           -> play the latest level
+    # python main.py 41 [--shuffled]  -> play a level;  python main.py 5 7 -> random 5x7
     args = sys.argv[1:]
+
+    if not args:
+        from launcher import Launcher
+        Launcher().run()
+        sys.exit(0)
 
     shuffled   = '--shuffled'   in args
     view_only  = '--view-only'  in args
-    args = [a for a in args if a not in ('--shuffled', '--view-only')]
+    args = [a for a in args if a not in ('--shuffled', '--view-only', 'latest')]
 
     if len(args) == 2 and args[0].isdigit() and args[1].isdigit():
         rows, cols = int(args[0]), int(args[1])

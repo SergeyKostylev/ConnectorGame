@@ -1,9 +1,9 @@
 {
   "window_size": [
     1380,
-    801
+    786
   ],
-  "selected": 1,
+  "selected": 0,
   "Generate v3": {
     "rows": "12",
     "cols": "12",
@@ -14,7 +14,7 @@
     "check orphans": false
   },
   "Edit Levels": {
-    "list_col_w": 332,
+    "list_col_w": 286,
     "show_shuffled": false,
     "shuffled_pos": [
       36,
@@ -24,18 +24,30 @@
     "filters": [
       "failed",
       "limit achieved",
-      "running",
-      "success",
       "unchecked"
     ],
-    "engine": "c"
+    "engine": "c",
+    "range_from": "1",
+    "range_to": "20",
+    "range_count": "10"
   },
   "Check Orphans": {
     "parallel": ""
   },
   "Orphan Check": {
     "step limit": "1040000000",
-    "after orphan": "10000000",
-    "parallel tiles": "30"
+    "after orphan": "3000000",
+    "parallel tiles": "30",
+    "parallel levels": "9"
+  },
+  "Generate": {
+    "algo": 2,
+    "rows": "",
+    "cols": "",
+    "batteries %": "",
+    "targets %": "",
+    "edit": false,
+    "empty level": false,
+    "check orphans": false
   }
 }

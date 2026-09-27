@@ -175,31 +175,21 @@ def save_level_to(meet_map, shuffled_map, path, version):
 
 
 # ── orphan check result (tools/orphan_checker.py) stored in metadata ─────────
-# orphan_check:      "success" | "failed" | "limit achieved"  (absent = not checked;
-#                    older files may say "incomplete" for "limit achieved")
-# orphan_cells:      tiles that can stay unpowered in a win   (always present, "" if none)
-# orphan_unresolved: tile that hit the search step limit — the check stops there
-# orphan_stopped:    tiles not finished because the level was already failed
-#                    (too expensive after an orphan was found — not verified)
-# orphan_ok:         tiles proven fine — written while the check runs, so a
-#                    stopped / closed check can be resumed without redoing them
-# orphan_time:       how long the check took, seconds
-# All of them are dropped when a tile's shape/type changes (see _carry_orphan_meta).
+# orphan_check:  "success" | "failed" | "limit achieved"  (absent = not checked;
+#                older files may say "incomplete" for "limit achieved")
+# orphan_cells:  tiles that can stay unpowered in a win   (always present, "" if none)
+# Both are dropped when a tile's shape/type changes (see _carry_orphan_meta).
 
-ORPHAN_KEYS = ('orphan_check', 'orphan_cells', 'orphan_unresolved', 'orphan_stopped',
-               'orphan_ok', 'orphan_time')
+ORPHAN_KEYS = ('orphan_check', 'orphan_cells')
 
 
 def _with_orphan_meta(meta, orphan):
-    """`meta` without orphan keys, then the orphan keys in a fixed order;
-    orphan_cells is always written (empty when there are none)."""
-    out = {k: v for k, v in meta.items() if k not in ORPHAN_KEYS}
-    if 'orphan_check' in orphan:
+    """`meta` without any orphan_* key (including ones older versions wrote),
+    then orphan_check and orphan_cells; orphan_cells is always present."""
+    out = {k: v for k, v in meta.items() if not k.startswith('orphan')}
+    if orphan.get('orphan_check'):
         out['orphan_check'] = orphan['orphan_check']
     out['orphan_cells'] = orphan.get('orphan_cells', '')
-    for key in ('orphan_unresolved', 'orphan_stopped', 'orphan_ok', 'orphan_time'):
-        if key in orphan:
-            out[key] = orphan[key]
     return out
 
 
@@ -237,7 +227,8 @@ def add_orphan_cells_key(path):
         if 'orphan_cells' in obj['metadata']:
             return False
         meta = _with_orphan_meta(obj['metadata'], obj['metadata'])
-        _atomic_write(path, _format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
+        _atomic_write(path, _format_level_json(meta, obj['meet_map'],
+                                               obj.get('shuffled_map') or []))
     return True
 
 
@@ -250,56 +241,29 @@ def parse_cells(text):
     return [(int(r), int(c)) for r, c in re.findall(r'\((\d+),(\d+)\)', text or '')]
 
 
-def _update_orphan_meta(path, shapes, change):
-    """Transaction on a level's orphan metadata: under level_lock(), re-read
-    the file, and only if its tile shapes are still `shapes` (the level the
-    check looked at), apply change(orphan_dict) and write atomically. Only
-    orphan keys change; maps and other metadata stay as they are on disk.
-    Returns False (nothing written) if the level changed meanwhile."""
+def write_orphan_check(path, unused, unresolved=(), shapes=None):
+    """Store an orphan check in the level's metadata, as a transaction: under
+    level_lock(), re-read the file and write only if its tile shapes are still
+    `shapes` (the level the check looked at). Maps and other metadata keep
+    whatever is on disk. Returns False (nothing written) if the level changed.
+
+    unused:     tiles that can stay unpowered in a win state -> "failed"
+    unresolved: tiles the check could not settle in time     -> "limit achieved"
+    """
     with level_lock():
         with open(path) as f:
             obj = json.load(f)
         if shapes is not None and _shapes(obj['meet_map']) != shapes:
             return False
-        meta = obj['metadata']
-        orphan = change({k: meta[k] for k in ORPHAN_KEYS if k in meta})
-        _atomic_write(path, _format_level_json(_with_orphan_meta(meta, orphan),
-                                               obj['meet_map'], obj.get('shuffled_map') or []))
-    return True
-
-
-def write_orphan_progress(path, shapes, ok, unused):
-    """While a check runs: record the tiles proven fine so far (and orphans
-    found so far — the level is failed as soon as there is one)."""
-    def change(orphan):
-        orphan['orphan_ok'] = _format_cells(sorted(ok))
-        if unused:
-            orphan['orphan_check'] = 'failed'
-            orphan['orphan_cells'] = _format_cells(sorted(unused))
-        return orphan
-    return _update_orphan_meta(path, shapes, change)
-
-
-def write_orphan_check(path, unused, unresolved, stopped=(), elapsed=None, ok=(), shapes=None):
-    """Store a finished orphan check in the level's metadata. With `shapes`,
-    nothing is written if the level's tiles changed since the check started."""
-    def change(_old):
         if unused:
             orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(sorted(unused))}
         elif unresolved:
             orphan = {'orphan_check': 'limit achieved'}
         else:
             orphan = {'orphan_check': 'success'}
-        if unresolved:
-            orphan['orphan_unresolved'] = _format_cells(unresolved)
-        if stopped:
-            orphan['orphan_stopped'] = _format_cells(sorted(stopped))
-        if ok:
-            orphan['orphan_ok'] = _format_cells(sorted(ok))
-        if elapsed is not None:
-            orphan['orphan_time'] = f"{elapsed:.1f}s"
-        return orphan
-    return _update_orphan_meta(path, shapes, change)
+        _atomic_write(path, _format_level_json(_with_orphan_meta(obj['metadata'], orphan),
+                                               obj['meet_map'], obj.get('shuffled_map') or []))
+    return True
 
 
 def _tile_path(cell, connected=False):

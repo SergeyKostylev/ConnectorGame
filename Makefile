@@ -1,11 +1,11 @@
-# Open the launcher window
+# Open the launcher window (same as: python main.py)
 launch:
 	python launcher.py
 
-# Run the built-in default level
+# Play the latest level
 # make run-default
 run-default:
-	python main.py
+	python main.py latest
 
 # Generate a v1 level (pipeline/missing only, no battery or target)
 # Params: rows, cols
@@ -37,7 +37,7 @@ generate-level-v3:
 # make level-run 1
 # make level-run 001
 level-run:
-	python main.py $(filter-out $@,$(MAKECMDGOALS))
+	python main.py $(or $(filter-out $@,$(MAKECMDGOALS)),latest)
 
 # Run a shuffled level from levels/shuffled/. If no name given — runs the latest
 # Error if level not found
@@ -55,16 +55,11 @@ edit:
 
 # Check levels for tiles that can stay unpowered in a win; stores the result
 # in each level's metadata (orphan_check). No number — all levels, in parallel
-# Needs the C solver: make build-solver
+# Needs OR-Tools: pip install ortools
 # make check-orphans
 # make check-orphans 41
 check-orphans:
 	python tools/orphan_checker.py --write $(filter-out $@,$(MAKECMDGOALS))
-
-# Build the C orphan solver (tools/orphan_solver) — required by the orphan check
-# make build-solver
-build-solver:
-	cc -O2 -o tools/orphan_solver tools/orphan_solver.c
 
 help:
 	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z0-9_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile

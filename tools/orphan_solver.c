@@ -1,8 +1,10 @@
 /*
- * orphan_solver — C port of the per-tile search in tools/orphan_checker.py
- * (unpowered mode: Solver + optimistic_ok + _directional_reach). Same
- * variable order, same domain order, same pruning, so it visits the same
- * search nodes as the Python version, just much faster.
+ * orphan_solver — the per-tile search of tools/orphan_checker.py (unpowered
+ * mode). Backtracking over cell rotations with conflict-directed
+ * backjumping: a dead end jumps straight back to the deepest cell that
+ * caused it, skipping unrelated cells. It visits a subset of the plain
+ * backtracking tree in the same order, so results are the same, with fewer
+ * steps (see ok() and backtrack()).
  *
  * Build:  make build-solver      (cc -O2 -o tools/orphan_solver tools/orphan_solver.c)
  *
@@ -30,6 +32,7 @@
  *
  * The process exits on end of input, or when its parent dies.
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,8 +54,21 @@ static int *order;               /* static search order (== Python's MRV choice)
 static int *bat, nbat, *tgt, ntgt;
 static int *orm, *andm;          /* OR / AND of the cell's domain masks */
 static int (*pass_)[4];          /* pass_[i][e]: exits reachable when entering from e */
-static int *par, *spar, *reached, *stk;
-static unsigned char *seen;
+static int *stk, *is_tgt;
+/* "visited in this ok() call" marks: comparing with a per-call stamp instead
+   of clearing the arrays on every search step */
+static unsigned *seen_at, *reached_at, *sure_at, stamp;
+
+/* conflict-directed backjumping: when ok() fails it lists the assigned cells
+   that caused it (expl); each depth keeps the set of earlier depths its
+   failures depend on (conf, a bitset per depth); a dead end jumps straight
+   back to the deepest of them, skipping cells that had nothing to do with it */
+static int *pos;                 /* depth a cell was assigned at, -1 = unassigned */
+static int *expl, nexpl;         /* explanation of the last ok() failure */
+static unsigned *expl_at;        /* dedup marks for expl (stamped) */
+static int *par_;                /* sure-flood parents, for the powered-path explanation */
+static uint64_t *conf;           /* n depths x W words */
+static int W, jump_to;
 
 static void *xalloc(size_t size) {
     void *p = calloc(1, size ? size : 1);
@@ -63,17 +79,8 @@ static void *xalloc(size_t size) {
 static void free_all(void) {
     free(type_); free(ndom); free(dom); free(nb); free(asg); free(order);
     free(bat); free(tgt); free(orm); free(andm); free(pass_);
-    free(par); free(spar); free(reached); free(stk); free(seen);
-}
-
-static int find(int *p, int x) {
-    while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
-    return x;
-}
-
-static void unite(int *p, int a, int b) {
-    int ra = find(p, a), rb = find(p, b);
-    if (ra != rb) p[ra] = rb;
+    free(stk); free(is_tgt); free(seen_at); free(reached_at); free(sure_at);
+    free(pos); free(expl); free(expl_at); free(par_); free(conf);
 }
 
 /* 1 open, 0 closed, 2 unknown — like side_state() in Python */
@@ -97,59 +104,100 @@ static int exits(int i, int e) {
 
 static int sp;
 
+static void blame(int x) {           /* x's assignment took part in the outcome */
+    if (x >= 0 && asg[x] >= 0 && expl_at[x] != stamp) {
+        expl_at[x] = stamp;
+        expl[nexpl++] = x;
+    }
+}
+
 static void enter(int x, int e) {
-    if (x < 0 || x == cand || seen[x * 4 + e]) return;
+    if (x < 0 || x == cand || seen_at[x * 4 + e] == stamp) return;
+    blame(x);                        /* entering x (or not) depends on its rotation */
     if (any_open(x, e)) {
-        seen[x * 4 + e] = 1;
+        seen_at[x * 4 + e] = stamp;
         stk[sp++] = x * 4 + e;
     }
 }
 
-/* optimistic_ok() + _directional_reach() + the "candidate already powered" test */
+/* Can this partial assignment still end in a win with the candidate unpowered?
+ *  1. every lamp must be reachable from a battery, power passing through a
+ *     cell only in a way one of its remaining rotations allows, never through
+ *     the candidate (direction-aware reachability; it implies the plain
+ *     undirected check the Python version also did, so that one is skipped);
+ *  2. the candidate must not already be connected to a battery by edges that
+ *     are open on both sides for sure. */
 static int ok(void) {
-    for (int i = 0; i < n; i++) { par[i] = i; spar[i] = i; }
-    for (int a = 0; a < n; a++) {
-        for (int d = 1; d <= 2; d++) {          /* right, down: each edge once */
-            int b = nb[a][d];
-            if (b < 0) continue;
-            int sa = side_state(a, d), sb = side_state(b, OPP[d]);
-            if (a != cand && b != cand && sa != 0 && sb != 0) unite(par, a, b);
-            if (sa == 1 && sb == 1) unite(spar, a, b);  /* includes the candidate */
-        }
+    if (++stamp == 0) {                     /* stamp wrapped: really clear once */
+        memset(seen_at, 0, sizeof(unsigned) * (size_t)n * 4);
+        memset(reached_at, 0, sizeof(unsigned) * (size_t)n);
+        memset(sure_at, 0, sizeof(unsigned) * (size_t)n);
+        memset(expl_at, 0, sizeof(unsigned) * (size_t)n);
+        stamp = 1;
     }
-    for (int k = 0; k < ntgt; k++) {
-        int rt = find(par, tgt[k]), hit = 0;
-        for (int j = 0; j < nbat && !hit; j++) hit = find(par, bat[j]) == rt;
-        if (!hit) return 0;
-    }
+    nexpl = 0;
 
-    /* direction-aware reachability */
-    memset(seen, 0, (size_t)n * 4);
-    memset(reached, 0, sizeof(int) * (size_t)n);
+    /* 1 — stops as soon as every lamp is reached */
+    int need = ntgt;
     sp = 0;
     for (int j = 0; j < nbat; j++) {
         int b = bat[j];
-        reached[b] = 1;
+        reached_at[b] = stamp;
+        blame(b);
         for (int d = 0; d < 4; d++)
             if (any_open(b, d)) enter(nb[b][d], OPP[d]);
     }
-    while (sp) {
+    while (sp && need) {
         int s = stk[--sp], x = s / 4, e = s % 4;
-        reached[x] = 1;
+        if (reached_at[x] != stamp) {
+            reached_at[x] = stamp;
+            if (is_tgt[x]) need--;
+        }
         int m = exits(x, e);
         for (int y = 0; y < 4; y++)
             if (y != e && ((m >> y) & 1)) enter(nb[x][y], OPP[y]);
     }
-    for (int k = 0; k < ntgt; k++)
-        if (!reached[tgt[k]]) return 0;
+    if (need) return 0;       /* expl: every assigned cell the flood touched —
+                                 the reached region and its blocked border */
 
-    int ro = find(spar, cand);
-    for (int j = 0; j < nbat; j++)
-        if (find(spar, bat[j]) == ro) return 0;   /* candidate provably powered */
+    /* 2 — flood from the batteries over sure edges, stop if it hits the candidate */
+    nexpl = 0;
+    if (++stamp == 0) {                     /* fresh marks for this part */
+        memset(seen_at, 0, sizeof(unsigned) * (size_t)n * 4);
+        memset(reached_at, 0, sizeof(unsigned) * (size_t)n);
+        memset(sure_at, 0, sizeof(unsigned) * (size_t)n);
+        memset(expl_at, 0, sizeof(unsigned) * (size_t)n);
+        stamp = 1;
+    }
+    sp = 0;
+    for (int j = 0; j < nbat; j++) {
+        sure_at[bat[j]] = stamp;
+        par_[bat[j]] = -1;
+        stk[sp++] = bat[j];
+    }
+    while (sp) {
+        int x = stk[--sp];
+        if (x == cand) {                    /* candidate provably powered */
+            for (int y = x; y >= 0; y = par_[y]) blame(y);   /* expl: that path */
+            return 0;
+        }
+        for (int d = 0; d < 4; d++) {
+            int y = nb[x][d];
+            if (y < 0 || sure_at[y] == stamp) continue;
+            if (side_state(x, d) == 1 && side_state(y, OPP[d]) == 1) {
+                sure_at[y] = stamp;
+                par_[y] = x;
+                stk[sp++] = y;
+            }
+        }
+    }
     return 1;
 }
 
-/* 1 found, 0 exhausted, -1 budget exceeded */
+#define CONF(d) (conf + (size_t)(d) * (size_t)W)
+
+/* 1 found, -1 budget exceeded, 0 dead end: jump_to = depth to resume at
+   (-1 = no solution at all), its conflict set already merged into CONF(jump_to) */
 static int backtrack(int depth) {
     steps++;
     if (steps > limit) return -1;
@@ -160,13 +208,35 @@ static int backtrack(int depth) {
     }
     if (depth == n) return 1;
     int v = order[depth];
+    uint64_t *C = CONF(depth);
+    memset(C, 0, sizeof(uint64_t) * (size_t)W);
     for (int k = 0; k < ndom[v]; k++) {
         asg[v] = dom[v][k];
-        if (ok()) {
-            int r = backtrack(depth + 1);
-            if (r) return r;                    /* keep asg on success */
+        pos[v] = depth;
+        if (!ok()) {
+            for (int i = 0; i < nexpl; i++) {
+                int dd = pos[expl[i]];
+                if (dd != depth) C[dd >> 6] |= (uint64_t)1 << (dd & 63);
+            }
+            continue;
         }
-        asg[v] = -1;
+        int r = backtrack(depth + 1);
+        if (r) return r;                        /* found (keep asg) or budget */
+        if (jump_to < depth) {                  /* this cell isn't to blame: skip it */
+            asg[v] = -1; pos[v] = -1;
+            return 0;
+        }
+        /* jump_to == depth: the dead end below depends on this cell — next value */
+    }
+    asg[v] = -1; pos[v] = -1;
+    int h = -1;                                 /* deepest earlier cause */
+    for (int w = W - 1; w >= 0 && h < 0; w--)
+        if (C[w]) h = w * 64 + 63 - __builtin_clzll(C[w]);
+    jump_to = h;
+    if (h >= 0) {
+        uint64_t *H = CONF(h);
+        for (int w = 0; w < W; w++) H[w] |= C[w];
+        H[h >> 6] &= ~((uint64_t)1 << (h & 63));
     }
     return 0;
 }
@@ -196,10 +266,16 @@ static int read_query(void) {
     bat   = xalloc(sizeof(int) * n);   tgt  = xalloc(sizeof(int) * n);
     orm   = xalloc(sizeof(int) * n);   andm = xalloc(sizeof(int) * n);
     pass_ = xalloc(sizeof(*pass_) * n);
-    par   = xalloc(sizeof(int) * n);   spar = xalloc(sizeof(int) * n);
-    reached = xalloc(sizeof(int) * n); stk  = xalloc(sizeof(int) * n * 4);
-    seen  = xalloc((size_t)n * 4);
+    stk   = xalloc(sizeof(int) * n * 4); is_tgt = xalloc(sizeof(int) * n);
+    seen_at = xalloc(sizeof(unsigned) * n * 4);
+    reached_at = xalloc(sizeof(unsigned) * n); sure_at = xalloc(sizeof(unsigned) * n);
+    stamp = 0;
     nbat = ntgt = 0;
+    W = (n + 63) / 64;
+    pos = xalloc(sizeof(int) * n);  expl = xalloc(sizeof(int) * n);
+    expl_at = xalloc(sizeof(unsigned) * n);  par_ = xalloc(sizeof(int) * n);
+    conf = xalloc(sizeof(uint64_t) * (size_t)n * (size_t)W);
+    for (int i = 0; i < n; i++) pos[i] = -1;
 
     for (int i = 0; i < n; i++) {
         if (scanf("%d %d", &type_[i], &ndom[i]) != 2 || ndom[i] < 1 || ndom[i] > 4) exit(1);
@@ -215,7 +291,7 @@ static int read_query(void) {
                 if ((dom[i][k] >> e) & 1) pass_[i][e] |= dom[i][k] & ~(1 << e);
         }
         if (type_[i] == T_BATT) bat[nbat++] = i;
-        if (type_[i] == T_TARG) tgt[ntgt++] = i;
+        if (type_[i] == T_TARG) { tgt[ntgt++] = i; is_tgt[i] = 1; }
         asg[i] = -1;
         order[i] = i;
     }
