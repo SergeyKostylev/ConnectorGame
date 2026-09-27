@@ -115,8 +115,9 @@ def save_level(meet_map, shuffled_map, name, version):
     path = os.path.join(LEVELS_DIR, f"{name}.json")
     encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
     encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
+    metadata = _with_orphan_meta(_build_metadata(meet_map, version), {})
     with open(path, 'w') as f:
-        f.write(_format_level_json(_build_metadata(meet_map, version), encoded_meet, encoded_shuffled))
+        f.write(_format_level_json(metadata, encoded_meet, encoded_shuffled))
     print(f"Saved: {path}")
     return path
 
@@ -124,12 +125,81 @@ def save_level(meet_map, shuffled_map, name, version):
 def save_level_to(meet_map, shuffled_map, path, version):
     encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
     encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
+    metadata = _with_orphan_meta(_build_metadata(meet_map, version),
+                                 _carry_orphan_meta(path, encoded_meet))
     dir_ = os.path.dirname(path)
     if dir_:
         os.makedirs(dir_, exist_ok=True)
     with open(path, 'w') as f:
-        f.write(_format_level_json(_build_metadata(meet_map, version), encoded_meet, encoded_shuffled))
+        f.write(_format_level_json(metadata, encoded_meet, encoded_shuffled))
     print(f"Saved: {path}")
+
+
+# ── orphan check result (tools/orphan_checker.py) stored in metadata ─────────
+# orphan_check:      "success" | "failed" | "incomplete"    (absent = not checked)
+# orphan_cells:      tiles that can stay unpowered in a win   (always present, "" if none)
+# orphan_unresolved: tiles the search gave up on              (when incomplete)
+
+ORPHAN_KEYS = ('orphan_check', 'orphan_cells', 'orphan_unresolved')
+
+
+def _with_orphan_meta(meta, orphan):
+    """`meta` without orphan keys, then the orphan keys in a fixed order;
+    orphan_cells is always written (empty when there are none)."""
+    out = {k: v for k, v in meta.items() if k not in ORPHAN_KEYS}
+    if 'orphan_check' in orphan:
+        out['orphan_check'] = orphan['orphan_check']
+    out['orphan_cells'] = orphan.get('orphan_cells', '')
+    if 'orphan_unresolved' in orphan:
+        out['orphan_unresolved'] = orphan['orphan_unresolved']
+    return out
+
+
+def _carry_orphan_meta(path, encoded_meet):
+    """Keep the stored check result only if the solved map is unchanged."""
+    try:
+        with open(path) as f:
+            old = json.load(f)
+    except Exception:
+        return {}
+    if old.get('meet_map') != encoded_meet:
+        return {}
+    meta = old.get('metadata', {})
+    return {k: meta[k] for k in ORPHAN_KEYS if k in meta}
+
+
+def add_orphan_cells_key(path):
+    """Add the (empty) orphan_cells key to a level file that lacks it;
+    nothing else in the file changes. Returns True if the file was updated."""
+    with open(path) as f:
+        obj = json.load(f)
+    if 'orphan_cells' in obj['metadata']:
+        return False
+    meta = _with_orphan_meta(obj['metadata'], obj['metadata'])
+    with open(path, 'w') as f:
+        f.write(_format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
+    return True
+
+
+def _format_cells(cells):
+    return " ".join(f"({r},{c})" for r, c in cells)
+
+
+def write_orphan_check(path, unused, unresolved):
+    """Store an orphan check result in the level's metadata."""
+    with open(path) as f:
+        obj = json.load(f)
+    if unused:
+        orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(unused)}
+    elif unresolved:
+        orphan = {'orphan_check': 'incomplete'}
+    else:
+        orphan = {'orphan_check': 'success'}
+    if unresolved:
+        orphan['orphan_unresolved'] = _format_cells(unresolved)
+    meta = _with_orphan_meta(obj['metadata'], orphan)
+    with open(path, 'w') as f:
+        f.write(_format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
 
 
 def _tile_path(cell, connected=False):

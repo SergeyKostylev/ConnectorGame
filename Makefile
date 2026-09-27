@@ -53,6 +53,13 @@ level-run-shuffled:
 edit:
 	python edit.py $(filter-out $@,$(MAKECMDGOALS))
 
+# Check levels for tiles that can stay unpowered in a win; stores the result
+# in each level's metadata (orphan_check). No number — all levels, in parallel
+# make check-orphans
+# make check-orphans 41
+check-orphans:
+	python tools/orphan_checker.py --write $(filter-out $@,$(MAKECMDGOALS))
+
 help:
 	@awk '/^$$/{desc=""} /^#/ && !desc{desc=substr($$0,3)} /^[a-zA-Z0-9_-]+:/{if(desc) printf "  %-25s %s\n", $$1, desc; desc=""}' Makefile
 

@@ -13,8 +13,8 @@
     "empty level": false
   },
   "Edit Levels": {
-    "list_col_w": 277,
-    "show_shuffled": true,
+    "list_col_w": 276,
+    "show_shuffled": false,
     "shuffled_pos": [
       36,
       349
