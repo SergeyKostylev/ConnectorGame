@@ -899,6 +899,7 @@ class LevelCheck:
         self.done     = 0
         self.unused   = []   # tiles that can stay unpowered in a win state
         self.timeouts = []   # tile that hit the step limit (the check stops there)
+        self.stopped_early = False   # a tile got too expensive after an orphan was found
         self.error    = None
         self.elapsed  = None
         self.running  = True
@@ -940,6 +941,8 @@ class LevelCheck:
                     self.unused.append(msg[1])
                 elif msg[2] == 'timeout':
                     self.timeouts.append(msg[1])
+                elif msg[2] == 'stopped':
+                    self.stopped_early = True
             elif kind == 'done':
                 self.elapsed = msg[1]
                 self.running = False
@@ -1500,7 +1503,8 @@ class Launcher:
         took = f" ({check.elapsed:.1f}s)" if check.elapsed is not None else ""
         if check.unused:
             cells = ", ".join(f"({r},{c})" for r, c in check.unused)
-            return f"{name}: tiles can stay unpowered in a win: {cells}{took}"
+            early = " — stopped early, more may exist" if check.stopped_early else ""
+            return f"{name}: tiles can stay unpowered in a win: {cells}{early}{took}"
         if check.timeouts:
             cells = ", ".join(f"({r},{c})" for r, c in check.timeouts)
             return f"{name}: limit achieved on tile {cells} — check stopped{took}"

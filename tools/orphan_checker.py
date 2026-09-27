@@ -19,8 +19,12 @@ Not brute force (4^N is intractable). Per candidate tile O:
 
 The search itself runs in C: tools/orphan_solver.c, built with
 `make build-solver`. This file prepares the levels, drives the solver and
-stores results. The step budget (DEFAULT_BUDGET / --budget) is passed to the
-solver at run time — no rebuild needed after changing it.
+stores results. Step limits per tile, passed to the solver at run time (no
+rebuild needed after changing them):
+    DEFAULT_BUDGET      (--budget)        until an orphan is found; a tile past
+                                          it stops the check: 'limit achieved'
+    AFTER_ORPHAN_BUDGET (--found-budget)  after that; a tile past it stops the
+                                          check, the level stays 'failed'
 
 Usage:
     python3 tools/orphan_checker.py levels/level_041.json
@@ -44,6 +48,9 @@ import app.config as config
 # search steps allowed per tile; the first tile past it stops the check
 # (orphan_unresolved = that tile, level status: 'limit achieved')
 DEFAULT_BUDGET = 1_000_000_000
+# once an orphan is found the level is failed anyway: keep checking only while
+# tiles are cheap — the first tile past this many steps stops the check
+AFTER_ORPHAN_BUDGET = 10_000_000
 
 U, R, D, L = 0, 1, 2, 3
 OPP = {U: D, D: U, L: R, R: L}
@@ -152,9 +159,10 @@ def _pattern(mask):
 class CSolver:
     """tools/orphan_solver running as a child process for one CheckJob.run().
     try_orphan(): is there a win state with the candidate tile unpowered?
-    Returns None (no), 'TIMEOUT' (step budget exceeded) or the win state as
-    {cell index: pattern}. The step budget is sent with every query, so
-    changing it needs no rebuild."""
+    Returns None (no), 'TIMEOUT' (step budget exceeded, no orphan found yet),
+    'STOP' (found_budget exceeded after an orphan was found) or the win state
+    as {cell index: pattern}. Both budgets are sent with every query, so
+    changing them needs no rebuild."""
 
     def __init__(self):
         if not c_engine_available():
@@ -162,11 +170,11 @@ class CSolver:
         self.proc = subprocess.Popen([SOLVER_BIN], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, text=True, bufsize=1)
 
-    def try_orphan(self, level, cell_idx, node_budget, comp_id, orig_patterns,
+    def try_orphan(self, level, cell_idx, node_budget, found_budget, comp_id, orig_patterns,
                    on_progress=None):
         base = [level.base_domain(i) for i in range(level.n)]
         my_comp = comp_id[cell_idx]
-        lines = [f"Q {level.rows} {level.cols} {cell_idx} {node_budget}"]
+        lines = [f"Q {level.rows} {level.cols} {cell_idx} {node_budget} {found_budget}"]
         for k in range(level.n):
             dom = [orig_patterns[k]] if comp_id[k] != my_comp else base[k]
             t = level.type[k // level.cols][k % level.cols]
@@ -187,6 +195,8 @@ class CSolver:
                     return None
                 if f[1] == 'timeout':
                     return 'TIMEOUT'
+                if f[1] == 'stop':
+                    return 'STOP'
                 return {i: _pattern(int(m)) for i, m in enumerate(f[3:])}
 
     def close(self):
@@ -250,8 +260,10 @@ class CheckJob:
     """A prepared check of one level. `total` candidate tiles; iterate
     `run()` to check them one by one (lets callers show progress / stop)."""
 
-    def __init__(self, level_path, budget=DEFAULT_BUDGET, only_cell=None):
+    def __init__(self, level_path, budget=DEFAULT_BUDGET, only_cell=None,
+                 found_budget=AFTER_ORPHAN_BUDGET):
         self.budget = budget
+        self.found_budget = found_budget
         cells = load_level(level_path, 'meet_map')
         level = Level(cells)
         self.level = level
@@ -296,7 +308,9 @@ class CheckJob:
         return len(self.candidates)
 
     def run(self, on_progress=None):
-        """Yields ((row, col), shape, status), status in 'ok' | 'unused' | 'timeout'.
+        """Yields ((row, col), shape, status), status in 'ok' | 'unused' | 'timeout'
+        | 'stopped' ('timeout' and 'stopped' end the run: 'stopped' = a tile got
+        too expensive after an orphan was already found).
         on_progress((row, col), steps) is called when a tile starts (steps=0)
         and every 65536 search steps while it is being checked."""
         csolver = CSolver()
@@ -315,16 +329,17 @@ class CheckJob:
             if on_progress:
                 on_progress((gi, gj), 0)
             progress = (lambda n, c=(gi, gj): on_progress(c, n)) if on_progress else None
-            result = csolver.try_orphan(sub, k, self.budget, sub_comp, sub_pats,
-                                        on_progress=progress)
-            if result and result != 'TIMEOUT':
+            result = csolver.try_orphan(sub, k, self.budget, self.found_budget,
+                                        sub_comp, sub_pats, on_progress=progress)
+            if result and result not in ('TIMEOUT', 'STOP'):
                 r0, c0 = gi - k // sub.cols, gj - k % sub.cols
                 known_unused |= {(r0 + x // sub.cols, c0 + x % sub.cols)
                                  for x in unused_in(sub, result, sub_comp)}
-            status = 'timeout' if result == 'TIMEOUT' else ('unused' if result else 'ok')
+            status = {'TIMEOUT': 'timeout', 'STOP': 'stopped'}.get(result) if isinstance(result, str) \
+                else ('unused' if result else 'ok')
             yield (gi, gj), shape, status
-            if status == 'timeout':
-                return   # limit achieved: no success is possible any more, stop here
+            if status in ('timeout', 'stopped'):
+                return   # limit achieved / level already failed: stop here
 
 
 def level_paths(args):
@@ -336,22 +351,24 @@ def level_paths(args):
             for a in args]
 
 
-def check_file(path, budget=DEFAULT_BUDGET):
+def check_file(path, budget=DEFAULT_BUDGET, found_budget=AFTER_ORPHAN_BUDGET):
     """Full unpowered-mode check of one level file (for batch runs)."""
     t0 = time.time()
     try:
         mtime = os.path.getmtime(path)
-        job = CheckJob(path, budget)
+        job = CheckJob(path, budget, found_budget=found_budget)
         if job.dangling:
             return {'path': path, 'error': 'meet_map has unmatched connectors'}
-        unused, timeouts = [], []
+        unused, timeouts, stopped = [], [], False
         for cell, _shape, status in job.run():
             if status == 'unused':
                 unused.append(cell)
             elif status == 'timeout':
                 timeouts.append(cell)
+            elif status == 'stopped':
+                stopped = True
         return {'path': path, 'mtime': mtime, 'unused': unused, 'timeouts': timeouts,
-                'elapsed': time.time() - t0, 'error': None}
+                'stopped': stopped, 'elapsed': time.time() - t0, 'error': None}
     except Exception as e:
         return {'path': path, 'error': str(e)}
 
@@ -364,7 +381,8 @@ def summarize(res):
     fmt = lambda cells: " ".join(f"({r},{c})" for r, c in cells)
     took = f"{res['elapsed']:.1f}s"
     if res['unused']:
-        return f"{name}: failed — {fmt(res['unused'])} ({took})"
+        early = " — stopped early, more may exist" if res.get('stopped') else ""
+        return f"{name}: failed — {fmt(res['unused'])}{early} ({took})"
     if res['timeouts']:
         return f"{name}: limit achieved on tile {fmt(res['timeouts'])} — check stopped ({took})"
     return f"{name}: success ({took})"
@@ -394,6 +412,8 @@ def main():
     ap.add_argument('--cell', default=None, help='row,col to test a single cell')
     ap.add_argument('--budget', type=int, default=DEFAULT_BUDGET,
                     help='search steps allowed per tile before it counts as unresolved')
+    ap.add_argument('--found-budget', type=int, default=AFTER_ORPHAN_BUDGET,
+                    help='steps allowed per tile once an orphan was found; past it the check stops')
     ap.add_argument('--verbose', action='store_true', help='also list tiles that are fine')
     args = ap.parse_args()
     paths = level_paths(args.levels)
@@ -410,7 +430,8 @@ def main():
         t0 = time.time()
         print(f"Checking {len(paths)} levels, {args.jobs} in parallel...")
         with multiprocessing.Pool(args.jobs) as pool:
-            for res in pool.imap_unordered(functools.partial(check_file, budget=args.budget), paths):
+            for res in pool.imap_unordered(functools.partial(check_file, budget=args.budget,
+                                                             found_budget=args.found_budget), paths):
                 print(store_result(res) if args.write else summarize(res), flush=True)
         print(f"Done in {time.time() - t0:.1f}s")
         return
@@ -418,7 +439,7 @@ def main():
     path = paths[0]
     t0 = time.time()
     only = tuple(map(int, args.cell.split(','))) if args.cell else None
-    job = CheckJob(path, args.budget, only)
+    job = CheckJob(path, args.budget, only, found_budget=args.found_budget)
     lv = job.level
     print(f"Grid {lv.rows}x{lv.cols}, "
           f"{len(lv.batteries)} batteries, {len(lv.targets)} targets, "
@@ -439,6 +460,9 @@ def main():
             unused.append((gi, gj))
             print(f"cell ({gi},{gj}) [{shape}]: WITNESS FOUND — a valid win state "
                   f"exists where this tile is unpowered")
+        elif status == 'stopped':
+            print(f"cell ({gi},{gj}) [{shape}]: over {args.found_budget} steps after an orphan "
+                  f"was found — check stopped, more orphans may exist")
         elif args.verbose:
             print(f"cell ({gi},{gj}) [{shape}]: can't be left unused")
 

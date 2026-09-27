@@ -9,16 +9,20 @@
  * Protocol (text, one long-lived process per level check; driven by
  * CSolver in orphan_checker.py):
  *
- *   in:   Q <rows> <cols> <candidate> <budget>
+ *   in:   Q <rows> <cols> <candidate> <budget> <found_budget>
  *         then rows*cols cells, row-major:  <type> <ndom> <mask> ... <mask>
  *           type: 0 pipeline/wall, 1 battery, 2 target
  *           mask: open sides, bit 0 up, 1 right, 2 down, 3 left
- *         The step budget comes with every query, so changing it in Python
- *         needs no rebuild.
+ *         budget:       steps allowed per tile while no orphan was found yet
+ *         found_budget: steps allowed per tile once this process has found an
+ *                       orphan (the level is failed; it's only worth
+ *                       continuing while tiles are cheap)
+ *         Both come with every query, so changing them in Python needs no rebuild.
  *
  *   out:  P <steps>                     progress, every 65536 steps
  *         R ok <steps>                  no win state leaves the candidate unpowered
- *         R timeout <steps>             step budget exceeded
+ *         R timeout <steps>             budget exceeded, no orphan found yet
+ *         R stop <steps>                found_budget exceeded after an orphan was found
  *         R unused <steps> <mask>*n     a win state with the candidate unpowered
  *
  * The process exits on end of input, or when its parent dies.
@@ -35,7 +39,8 @@ static const int DR[4]  = {-1, 0, 1, 0};
 static const int DC[4]  = {0, 1, 0, -1};
 
 static int n, rows, cols, cand;
-static long long budget, steps;
+static long long budget, found_budget, limit, steps;
+static int found_any;            /* this process has already reported an orphan */
 
 static int *type_, *ndom, (*dom)[4], (*nb)[4];
 static int *asg;                 /* -1 = undecided, else the chosen pattern mask */
@@ -144,7 +149,7 @@ static int ok(void) {
 /* 1 found, 0 exhausted, -1 budget exceeded */
 static int backtrack(int depth) {
     steps++;
-    if (steps > budget) return -1;
+    if (steps > limit) return -1;
     if ((steps & 0xFFFF) == 0) {
         printf("P %lld\n", steps);
         fflush(stdout);
@@ -173,7 +178,10 @@ static int read_query(void) {
     char tag[8];
     if (scanf("%7s", tag) != 1) return 0;
     if (strcmp(tag, "Q") != 0) { fprintf(stderr, "orphan_solver: bad input\n"); exit(1); }
-    if (scanf("%d %d %d %lld", &rows, &cols, &cand, &budget) != 4) exit(1);
+    if (scanf("%d %d %d %lld %lld", &rows, &cols, &cand, &budget, &found_budget) != 5) {
+        fprintf(stderr, "orphan_solver: bad query header (rebuild: make build-solver)\n");
+        exit(1);
+    }
     n = rows * cols;
 
     type_ = xalloc(sizeof(int) * n);   ndom = xalloc(sizeof(int) * n);
@@ -219,13 +227,17 @@ static int read_query(void) {
 int main(void) {
     while (read_query()) {
         steps = 0;
+        limit = (found_any && found_budget < budget) ? found_budget : budget;
         int r = ok() ? backtrack(0) : 0;
         if (r == 1) {
+            found_any = 1;
             printf("R unused %lld", steps);
             for (int i = 0; i < n; i++) printf(" %d", asg[i]);
             printf("\n");
+        } else if (r < 0) {
+            printf(found_any ? "R stop %lld\n" : "R timeout %lld\n", steps);
         } else {
-            printf(r < 0 ? "R timeout %lld\n" : "R ok %lld\n", steps);
+            printf("R ok %lld\n", steps);
         }
         fflush(stdout);
         free_all();
