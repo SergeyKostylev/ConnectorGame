@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 from app.services.DataMapGenerator import Generator
 from app.services.DataMapGeneratorV2 import GeneratorV2
 from app.services.DataMapGeneratorV3 import GeneratorV3
+from app.services.DataMapGeneratorSat import GeneratorSat, DEFAULT_TARGETS_PCT as SAT_TARGETS_PCT
 from app.services.helper import unsort_map
 import app.config as config
 
@@ -51,7 +52,8 @@ def decode_map(encoded):
 def load_level_file(path):
     with open(path) as f:
         obj = json.load(f)
-    version = int(obj['metadata']['generator'][1:])
+    gen = obj['metadata']['generator']
+    version = int(gen[1:]) if gen[1:].isdigit() else gen
     meet = decode_map(obj['meet_map'])
     shuffled = decode_map(obj['shuffled_map']) if obj.get('shuffled_map') else []
     return meet, shuffled, version
@@ -75,7 +77,7 @@ def _build_metadata(data_map, version):
         return f"{c} ({c / total * 100:.1f}%)"
     return {
         'size': f"{len(data_map)}x{len(data_map[0])}",
-        'generator': f"v{version}",
+        'generator': f"v{version}" if isinstance(version, int) else version,
         **{k: fmt(k) for k in ['battery', 'target', 'pipeline', 'wall']},
     }
 
@@ -175,9 +177,12 @@ def save_level_to(meet_map, shuffled_map, path, version):
 
 
 # ── orphan check result (tools/orphan_checker.py) stored in metadata ─────────
-# orphan_check:  "success" | "failed" | "limit achieved"  (absent = not checked;
-#                older files may say "incomplete" for "limit achieved")
-# orphan_cells:  tiles that can stay unpowered in a win   (always present, "" if none)
+# orphan_check:  "success" | "failed" | "limit achieved" | "broken"
+#                (absent = not checked; older files may say "incomplete" for
+#                "limit achieved")
+# orphan_cells:  tiles that can stay unpowered in a win, or — when "broken" —
+#                the tiles that break the solved map: unpowered tiles, tiles
+#                with a loose side, batteries wired together   (absent when none)
 # Both are dropped when a tile's shape/type changes (see _carry_orphan_meta).
 
 ORPHAN_KEYS = ('orphan_check', 'orphan_cells')
@@ -185,11 +190,13 @@ ORPHAN_KEYS = ('orphan_check', 'orphan_cells')
 
 def _with_orphan_meta(meta, orphan):
     """`meta` without any orphan_* key (including ones older versions wrote),
-    then orphan_check and orphan_cells; orphan_cells is always present."""
+    then orphan_check and, only when non-empty, orphan_cells."""
     out = {k: v for k, v in meta.items() if not k.startswith('orphan')}
     if orphan.get('orphan_check'):
         out['orphan_check'] = orphan['orphan_check']
-    out['orphan_cells'] = orphan.get('orphan_cells', '')
+    cells = orphan.get('orphan_cells', '')
+    if cells:
+        out['orphan_cells'] = cells
     return out
 
 
@@ -218,20 +225,6 @@ def _carry_orphan_meta(path, encoded_meet):
     return {k: meta[k] for k in ORPHAN_KEYS if k in meta}
 
 
-def add_orphan_cells_key(path):
-    """Add the (empty) orphan_cells key to a level file that lacks it;
-    nothing else in the file changes. Returns True if the file was updated."""
-    with level_lock():
-        with open(path) as f:
-            obj = json.load(f)
-        if 'orphan_cells' in obj['metadata']:
-            return False
-        meta = _with_orphan_meta(obj['metadata'], obj['metadata'])
-        _atomic_write(path, _format_level_json(meta, obj['meet_map'],
-                                               obj.get('shuffled_map') or []))
-    return True
-
-
 def _format_cells(cells):
     return " ".join(f"({r},{c})" for r, c in cells)
 
@@ -241,12 +234,13 @@ def parse_cells(text):
     return [(int(r), int(c)) for r, c in re.findall(r'\((\d+),(\d+)\)', text or '')]
 
 
-def write_orphan_check(path, unused, unresolved=(), shapes=None):
+def write_orphan_check(path, unused, unresolved=(), shapes=None, broken=()):
     """Store an orphan check in the level's metadata, as a transaction: under
     level_lock(), re-read the file and write only if its tile shapes are still
     `shapes` (the level the check looked at). Maps and other metadata keep
     whatever is on disk. Returns False (nothing written) if the level changed.
 
+    broken:     the solved map is wrong at these tiles       -> "broken"
     unused:     tiles that can stay unpowered in a win state -> "failed"
     unresolved: tiles the check could not settle in time     -> "limit achieved"
     """
@@ -255,7 +249,9 @@ def write_orphan_check(path, unused, unresolved=(), shapes=None):
             obj = json.load(f)
         if shapes is not None and _shapes(obj['meet_map']) != shapes:
             return False
-        if unused:
+        if broken:
+            orphan = {'orphan_check': 'broken', 'orphan_cells': _format_cells(sorted(broken))}
+        elif unused:
             orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(sorted(unused))}
         elif unresolved:
             orphan = {'orphan_check': 'limit achieved'}
@@ -309,6 +305,7 @@ VERSION_FLAGS = {
     1: set(),
     2: {'batteries', 'run'},
     3: {'batteries', 'run', 'targets-percent'},
+    'sat': {'batteries', 'batteries-percent', 'run', 'targets-percent'},
 }
 
 
@@ -323,14 +320,16 @@ def parse_args(args):
         if '=' in a:
             k, v = a.split('=', 1)
             kv[k] = v
-        elif a in ('v2', 'v3', 'run'):
+        elif a in ('v2', 'v3', 'sat', 'run'):
             bools.add(a)
         else:
             positional.append(a)
 
-    parsed['version'] = 3 if 'v3' in bools else (2 if 'v2' in bools else 1)
+    parsed['version'] = ('sat' if 'sat' in bools else 3 if 'v3' in bools
+                         else 2 if 'v2' in bools else 1)
     parsed['run'] = 'run' in bools
     parsed['batteries'] = int(kv['batteries']) if 'batteries' in kv else None
+    parsed['batteries_percent'] = float(kv['batteries-percent']) if 'batteries-percent' in kv else None
     parsed['targets_percent'] = float(kv['targets-percent']) if 'targets-percent' in kv else None
     parsed['shuffled'] = True
     parsed['rows'] = int(positional[0]) if len(positional) > 0 else None
@@ -346,15 +345,20 @@ def validate_args(parsed):
 
     if parsed['batteries'] is not None and 'batteries' not in supported:
         unsupported.append('batteries')
+    if parsed['batteries_percent'] is not None and 'batteries-percent' not in supported:
+        unsupported.append('batteries-percent')
     if parsed['run'] and 'run' not in supported:
         unsupported.append('run')
     if parsed['targets_percent'] is not None and 'targets-percent' not in supported:
         unsupported.append('targets-percent')
 
     if unsupported:
-        print(f"Error: v{version} does not support: {', '.join(unsupported)}")
+        print(f"Error: {version} does not support: {', '.join(unsupported)}")
         sys.exit(1)
 
+    if parsed['batteries_percent'] is not None and not (0 < parsed['batteries_percent'] < 100):
+        print(f"Error: batteries-percent must be between 0 and 100 (got {parsed['batteries_percent']})")
+        sys.exit(1)
     if parsed['targets_percent'] is not None and not (0 < parsed['targets_percent'] < 100):
         print(f"Error: targets-percent must be between 0 and 100 (got {parsed['targets_percent']})")
         sys.exit(1)
@@ -381,11 +385,25 @@ if __name__ == "__main__":
         'targets_percent': f'{targets_percent}%' if targets_percent is not None else 'default',
         'run': run,
     }
-    if version != 3:
+    if version not in (3, 'sat'):
         del params['targets_percent']
+    if version == 'sat' and parsed['batteries_percent'] is not None:
+        params['batteries_percent'] = f"{parsed['batteries_percent']}%"
     print("\n".join(f"  {k}: {v}" for k, v in params.items()) + "\n")
 
-    if version == 3:
+    if version == 'sat':
+        # proved orphan-free; batteries/targets within +-5 percentage points
+        bat_pct = parsed['batteries_percent']
+        try:
+            data_map = GeneratorSat().generate(
+                rows, cols,
+                batteries_pct=bat_pct if bat_pct is not None else config.GENERATE_BATTERIES_DENSITY * 100,
+                targets_pct=targets_percent if targets_percent is not None else SAT_TARGETS_PCT,
+                batteries=batteries)
+        except (RuntimeError, ValueError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+    elif version == 3:
         if batteries is None:
             batteries = random_batteries(rows, cols)
         target_limit = round(rows * cols * targets_percent / 100) if targets_percent is not None else None
@@ -402,7 +420,9 @@ if __name__ == "__main__":
 
     import copy
     shuffled_data = unsort_map(copy.deepcopy(data_map)) if shuffled else []
-    save_level(data_map, shuffled_data, name, version)
+    path = save_level(data_map, shuffled_data, name, version)
+    if version == 'sat':
+        write_orphan_check(path, [])   # GeneratorSat only returns proved levels
 
     if run:
         from app.pygame import App

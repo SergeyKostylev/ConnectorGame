@@ -32,6 +32,12 @@ generate-level-v2:
 generate-level-v3:
 	python generate.py v3 $(if $(rows),$(rows),) $(if $(cols),$(cols),) $(if $(batteries),batteries=$(batteries),) $(if $(targets_percent),targets-percent=$(targets_percent),) $(if $(run),run,)
 
+# Generate a proved orphan-free level with CP-SAT (OR-Tools, same lib as the orphan checker)
+# Params: rows, cols, batteries_percent, targets_percent (each +-5 points), run=1
+# make generate-level-sat rows=10 cols=10 batteries_percent=5 targets_percent=20
+generate-level-sat:
+	python generate.py sat $(if $(rows),$(rows),) $(if $(cols),$(cols),) $(if $(batteries_percent),batteries-percent=$(batteries_percent),) $(if $(targets_percent),targets-percent=$(targets_percent),) $(if $(run),run,)
+
 # Run a specific level from levels/. If no name given — runs the latest
 # make level-run
 # make level-run 1

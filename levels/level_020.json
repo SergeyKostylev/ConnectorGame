@@ -6,8 +6,7 @@
     "target": "11 (22.4%)",
     "pipeline": "34 (69.4%)",
     "wall": "0 (0.0%)",
-    "orphan_check": "success",
-    "orphan_cells": ""
+    "orphan_check": "success"
   },
   "meet_map": [
     ["g:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "i:90:battery"  ],

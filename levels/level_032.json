@@ -3,32 +3,31 @@
     "size": "9x10",
     "generator": "v3",
     "battery": "7 (7.8%)",
-    "target": "19 (21.1%)",
-    "pipeline": "64 (71.1%)",
+    "target": "20 (22.2%)",
+    "pipeline": "63 (70.0%)",
     "wall": "0 (0.0%)",
-    "orphan_check": "failed",
-    "orphan_cells": "(0,0) (0,1) (1,0) (1,1) (1,2) (1,3) (1,4) (2,0) (3,0) (3,1) (3,2) (3,3) (6,9) (7,7) (7,9) (8,9)"
+    "orphan_check": "success"
   },
   "meet_map": [
     ["g:90:pipeline",  "g:180:pipeline", "i:270:target",   "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "g:180:pipeline", "g:90:pipeline",  "l:90:pipeline",  "g:180:pipeline"],
-    ["l:0:pipeline",   "g:0:pipeline",   "l:90:pipeline",  "l:90:pipeline",  "g:180:pipeline", "g:90:pipeline",  "t:90:pipeline",  "i:180:target",   "g:90:pipeline",  "t:90:pipeline" ],
-    ["l:0:pipeline",   "i:270:battery",  "l:90:pipeline",  "l:90:pipeline",  "g:270:pipeline", "i:180:target",   "g:0:pipeline",   "g:180:pipeline", "i:180:target",   "l:0:pipeline"  ],
-    ["g:0:pipeline",   "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "l:90:pipeline",  "i:90:target",    "i:0:target",     "g:0:pipeline",   "i:90:battery",   "l:0:pipeline"  ],
+    ["l:0:pipeline",   "g:0:pipeline",   "g:180:pipeline", "i:270:target",   "g:180:pipeline", "g:90:pipeline",  "t:90:pipeline",  "i:180:target",   "g:90:pipeline",  "t:90:pipeline" ],
+    ["l:0:pipeline",   "i:270:battery",  "g:270:pipeline", "g:90:pipeline",  "g:270:pipeline", "i:180:target",   "g:0:pipeline",   "g:180:pipeline", "i:180:target",   "l:0:pipeline"  ],
+    ["g:0:pipeline",   "l:90:pipeline",  "l:90:pipeline",  "t:180:pipeline", "l:90:pipeline",  "i:90:target",    "i:0:target",     "g:0:pipeline",   "i:90:battery",   "l:0:pipeline"  ],
     ["g:90:pipeline",  "l:90:pipeline",  "i:90:target",    "g:90:pipeline",  "t:0:pipeline",   "t:0:pipeline",   "g:270:pipeline", "i:270:target",   "g:180:pipeline", "i:180:battery" ],
     ["l:0:pipeline",   "i:270:target",   "g:180:pipeline", "i:180:target",   "i:180:target",   "i:180:battery",  "i:0:target",     "i:0:battery",    "t:270:pipeline", "i:90:target"   ],
-    ["g:0:pipeline",   "l:90:pipeline",  "t:90:pipeline",  "g:90:pipeline",  "t:0:pipeline",   "t:0:pipeline",   "t:180:pipeline", "t:90:pipeline",  "t:270:pipeline", "g:180:pipeline"],
-    ["g:90:pipeline",  "t:0:pipeline",   "g:270:pipeline", "i:180:target",   "l:0:pipeline",   "l:0:pipeline",   "i:0:target",     "l:0:pipeline",   "i:180:target",   "l:0:pipeline"  ],
+    ["g:0:pipeline",   "l:90:pipeline",  "t:90:pipeline",  "g:90:pipeline",  "t:0:pipeline",   "t:0:pipeline",   "t:180:pipeline", "t:90:pipeline",  "g:0:pipeline",   "g:180:pipeline"],
+    ["g:90:pipeline",  "t:0:pipeline",   "g:270:pipeline", "i:180:target",   "l:0:pipeline",   "l:0:pipeline",   "i:0:target",     "l:0:pipeline",   "i:270:target",   "t:90:pipeline" ],
     ["i:180:target",   "i:180:battery",  "i:270:target",   "l:90:pipeline",  "g:270:pipeline", "g:0:pipeline",   "g:270:pipeline", "i:180:target",   "i:270:battery",  "g:270:pipeline"]
   ],
   "shuffled_map": [
     ["g:180:pipeline", "g:0:pipeline",   "i:0:target",     "l:0:pipeline",   "l:0:pipeline",   "l:90:pipeline",  "g:180:pipeline", "g:180:pipeline", "l:180:pipeline", "g:270:pipeline"],
-    ["l:90:pipeline",  "g:270:pipeline", "l:0:pipeline",   "l:180:pipeline", "g:0:pipeline",   "g:0:pipeline",   "t:0:pipeline",   "i:90:target",    "g:90:pipeline",  "t:270:pipeline"],
-    ["l:0:pipeline",   "i:0:battery",    "l:0:pipeline",   "l:180:pipeline", "g:0:pipeline",   "i:90:target",    "g:270:pipeline", "g:90:pipeline",  "i:180:target",   "l:90:pipeline" ],
-    ["g:0:pipeline",   "l:0:pipeline",   "l:180:pipeline", "l:270:pipeline", "l:270:pipeline", "i:270:target",   "i:270:target",   "g:270:pipeline", "i:270:battery",  "l:270:pipeline"],
+    ["l:90:pipeline",  "g:270:pipeline", "g:0:pipeline",   "i:180:target",   "g:0:pipeline",   "g:0:pipeline",   "t:0:pipeline",   "i:90:target",    "g:90:pipeline",  "t:270:pipeline"],
+    ["l:0:pipeline",   "i:0:battery",    "g:0:pipeline",   "g:180:pipeline", "g:0:pipeline",   "i:90:target",    "g:270:pipeline", "g:90:pipeline",  "i:180:target",   "l:90:pipeline" ],
+    ["g:0:pipeline",   "l:0:pipeline",   "l:180:pipeline", "t:270:pipeline", "l:270:pipeline", "i:270:target",   "i:270:target",   "g:270:pipeline", "i:270:battery",  "l:270:pipeline"],
     ["g:0:pipeline",   "l:0:pipeline",   "i:270:target",   "g:90:pipeline",  "t:0:pipeline",   "t:90:pipeline",  "g:180:pipeline", "i:180:target",   "g:90:pipeline",  "i:90:battery"  ],
     ["l:180:pipeline", "i:0:target",     "g:90:pipeline",  "i:180:target",   "i:90:target",    "i:270:battery",  "i:270:target",   "i:270:battery",  "t:270:pipeline", "i:90:target"   ],
-    ["g:90:pipeline",  "l:180:pipeline", "t:180:pipeline", "g:90:pipeline",  "t:90:pipeline",  "t:0:pipeline",   "t:90:pipeline",  "t:0:pipeline",   "t:180:pipeline", "g:270:pipeline"],
-    ["g:270:pipeline", "t:270:pipeline", "g:180:pipeline", "i:180:target",   "l:180:pipeline", "l:90:pipeline",  "i:180:target",   "l:0:pipeline",   "i:180:target",   "l:0:pipeline"  ],
+    ["g:90:pipeline",  "l:180:pipeline", "t:180:pipeline", "g:90:pipeline",  "t:90:pipeline",  "t:0:pipeline",   "t:90:pipeline",  "t:0:pipeline",   "g:180:pipeline", "g:270:pipeline"],
+    ["g:270:pipeline", "t:270:pipeline", "g:180:pipeline", "i:180:target",   "l:180:pipeline", "l:90:pipeline",  "i:180:target",   "l:0:pipeline",   "i:180:target",   "t:0:pipeline"  ],
     ["i:180:target",   "i:180:battery",  "i:270:target",   "l:90:pipeline",  "g:90:pipeline",  "g:0:pipeline",   "g:90:pipeline",  "i:270:target",   "i:180:battery",  "g:180:pipeline"]
   ]
 }

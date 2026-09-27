@@ -1,7 +1,7 @@
 {
   "window_size": [
-    1380,
-    786
+    1464,
+    720
   ],
   "selected": 0,
   "Generate v3": {
@@ -14,7 +14,7 @@
     "check orphans": false
   },
   "Edit Levels": {
-    "list_col_w": 286,
+    "list_col_w": 285,
     "show_shuffled": false,
     "shuffled_pos": [
       36,
@@ -24,6 +24,8 @@
     "filters": [
       "failed",
       "limit achieved",
+      "running",
+      "success",
       "unchecked"
     ],
     "engine": "c",
@@ -41,10 +43,10 @@
     "parallel levels": "9"
   },
   "Generate": {
-    "algo": 2,
-    "rows": "",
-    "cols": "",
-    "batteries %": "",
+    "algo": "v3",
+    "rows": "11",
+    "cols": "12",
+    "batteries %": "12",
     "targets %": "",
     "edit": false,
     "empty level": false,

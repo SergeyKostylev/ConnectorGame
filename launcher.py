@@ -4,6 +4,7 @@ import re
 import json
 import subprocess
 import threading
+import time
 import pygame
 import app.config as config
 from app.services.DataMapGeneratorV3 import DEFAULT_TARGETS_PCT
@@ -20,16 +21,14 @@ RUN_H     = 34
 PAD       = 12
 ROW_H     = 38
 INPUT_H   = 24
-LABEL_W   = 110
-INP_W     = 160
 STEP_W    = 22
-CAPTION_H = 20   # 'shuffled' / 'solved' labels above the two maps
+CAPTION_H = 20
+
 NAME_H    = 28   # level name above the maps
 
 BG        = (30,  30,  30 )
 HEADER    = (45,  45,  45 )
 NAV_SEL   = (55,  80,  55 )
-NAV_HOV   = (48,  48,  48 )
 SEP       = (55,  55,  55 )
 BTN_BG    = (80,  120, 80 )
 BTN_HOV   = (100, 155, 100)
@@ -48,6 +47,7 @@ FG_STATUS = (170, 200, 170)
 ORPHAN_COLORS = {
     'success':    (110, 190, 110),
     'failed':     (210, 95, 95),
+    'broken':     (205, 110, 215),
     'limit achieved': (210, 170, 70),
     'not checked': (210, 170, 70),
 }
@@ -57,6 +57,7 @@ STALE_ROW = (92, 78, 32)
 ORPHAN_BADGE_COLORS = {
     'success':    (70, 130, 70),
     'failed':     (150, 60, 60),
+    'broken':     (125, 60, 135),
     'limit achieved': (150, 115, 45),
     'not checked': (150, 115, 45),
 }
@@ -74,7 +75,8 @@ BATCH_PARALLEL = 4
 
 
 # level list filters: key -> checkbox label
-LEVEL_FILTERS = {'success': 'success', 'failed': 'failed', 'limit achieved': 'limit',
+# ('broken' levels are listed under 'failed', see LevelListPanel.state_of)
+LEVEL_FILTERS = {'success': 'success', 'failed': 'failed/broken', 'limit achieved': 'limit',
                  'unchecked': 'unchecked', 'running': 'in progress'}
 
 
@@ -257,6 +259,11 @@ class Dropdown:
 
 class LevelListPanel:
     ITEM_H = 94
+    # auto-refresh from disk: one stat() of levels/ per DIR_POLL_S catches every
+    # write of ours (_atomic_write renames into the folder, which bumps its
+    # mtime); a scandir every FILES_POLL_S also catches in-place edits by hand
+    DIR_POLL_S   = 1.0
+    FILES_POLL_S = 5.0
 
     def __init__(self):
         self._levels      = []   # list of {'name': str, 'meta': dict}
@@ -275,39 +282,109 @@ class LevelListPanel:
         self.blink_until  = {}   # name -> pygame ticks when its 3 s blink ends
         self._last_state  = {}   # name -> state seen on the previous frame
         self._last_shown  = set()
-        self._scroll_to   = None   # name of a row to scroll into view on next draw
-        self._edit_rects  = []
+        self._scroll_to   = None
         self._scroll          = 0    # pixel offset
         self._scroll_to_bottom = True
         self._list_h          = 0
         self._font_sm     = None
+        self._icons       = {}   # path -> scaled Surface cache
+        self._dir_mtime   = None # levels/ mtime at the last scan
+        self._next_dir_poll   = 0.0
+        self._next_files_poll = 0.0
         self._refresh()
+
+    _ICON_PATHS = {
+        'battery':  os.path.join('src', 'battery', 'bat_0.jpg'),
+        'target':   os.path.join('src', 'target',  'on_0.jpg'),
+        'pipeline': os.path.join('src', 't0.jpg'),
+        'wall':     os.path.join('src', 'w0.jpg'),
+    }
+
+    def _get_icon(self, key, size=14):
+        cache_key = (key, size)
+        if cache_key not in self._icons:
+            path = self._ICON_PATHS.get(key, '')
+            try:
+                img = pygame.image.load(path).convert()
+                self._icons[cache_key] = pygame.transform.smoothscale(img, (size, size))
+            except Exception:
+                self._icons[cache_key] = None
+        return self._icons[cache_key]
+
+    def _blit_icon_stat(self, surf, icon_key, value, x, y, font, icon_size=14):
+        """Blit a small tile icon + numeric value. Returns the x offset after."""
+        icon = self._get_icon(icon_key, icon_size)
+        if icon:
+            surf.blit(icon, (x, y + 1))
+            x += icon_size + 2
+        t = font.render(str(value), True, FG_DIM)
+        surf.blit(t, (x, y))
+        return x + t.get_width()
 
     def _refresh(self):
         self.selected          = -1
         self._scroll_to_bottom = True
+        self._levels = [self._load_entry(name, mtime)
+                        for name, mtime in sorted(self._scan().items())]
+
+    @staticmethod
+    def _scan():
+        """{level name: file mtime} for levels/level_NNN.json."""
+        found = {}
         try:
-            files = sorted(
-                f for f in os.listdir(LEVELS_DIR)
-                if re.match(r'level_\d+\.json$', f)
-            )
+            with os.scandir(LEVELS_DIR) as it:
+                for e in it:
+                    if re.match(r'level_\d+\.json$', e.name):
+                        try:
+                            found[e.name[:-5]] = e.stat().st_mtime
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        return found
+
+    @staticmethod
+    def _load_entry(name, mtime):
+        meta = {}
+        try:
+            with open(os.path.join(LEVELS_DIR, f"{name}.json")) as fp:
+                meta = json.load(fp).get('metadata', {})
         except Exception:
-            self._levels = []
-            return
-        levels = []
-        for f in files:
-            name = os.path.splitext(f)[0]
-            meta  = {}
-            mtime = None
-            try:
-                path  = os.path.join(LEVELS_DIR, f)
-                mtime = os.path.getmtime(path)
-                with open(path) as fp:
-                    meta = json.load(fp).get('metadata', {})
-            except Exception:
-                pass
-            levels.append({'name': name, 'meta': meta, 'mtime': mtime})
-        self._levels = levels
+            pass
+        return {'name': name, 'meta': meta, 'mtime': mtime}
+
+    def poll_disk(self):
+        """Called every frame; cheap. Picks up levels added, removed or changed
+        on disk, re-reading only those files, and keeps the selection and
+        scroll. Returns the set of level names that changed."""
+        now = time.monotonic()
+        if now < self._next_dir_poll:
+            return set()
+        self._next_dir_poll = now + self.DIR_POLL_S
+        try:
+            dir_mtime = os.stat(LEVELS_DIR).st_mtime_ns
+        except OSError:
+            return set()
+        if dir_mtime == self._dir_mtime and now < self._next_files_poll:
+            return set()
+        self._dir_mtime = dir_mtime
+        self._next_files_poll = now + self.FILES_POLL_S
+
+        found = self._scan()
+        known = {e['name']: e for e in self._levels}
+        changed = {n for n in found.keys() | known.keys()
+                   if n not in found or n not in known or found[n] != known[n]['mtime']}
+        if not changed:
+            return changed
+        sel_name  = self.selected_name()
+        edit_name = (self._levels[self.editing]['name']
+                     if 0 <= self.editing < len(self._levels) else None)
+        self._levels = [known[n] if n not in changed else self._load_entry(n, m)
+                        for n, m in sorted(found.items())]
+        names = [l['name'] for l in self._levels]
+        self.selected = names.index(sel_name) if sel_name in names else -1
+        self.editing  = names.index(edit_name) if edit_name in names else -1
+        return changed
 
     def reload(self):
         """Re-read levels from disk, keeping the selection and scroll position."""
@@ -321,6 +398,18 @@ class LevelListPanel:
         names = [l['name'] for l in self._levels]
         self.selected = names.index(sel_name) if sel_name in names else -1
         self.editing  = names.index(edit_name) if edit_name in names else -1
+
+    def focus(self, name):
+        """Re-read levels, select `name` and scroll to it; a level the filters
+        would hide is pinned so it shows."""
+        self.reload()
+        names = [l['name'] for l in self._levels]
+        if name not in names:
+            return
+        self.selected = names.index(name)
+        if not any(e['name'] == name for _, e in self.visible()):
+            self.pinned.add(name)
+        self._scroll_to = name
 
     # ── unused-tile checks ───────────────────────────────────────────────────
 
@@ -359,6 +448,8 @@ class LevelListPanel:
         if c and c.running:
             return 'running'
         state = orphan_status(entry['meta'])
+        if state == 'broken':          # one filter for both kinds of bad level
+            return 'failed'
         return state if state in LEVEL_FILTERS else 'unchecked'
 
     def visible(self):
@@ -491,10 +582,53 @@ class LevelListPanel:
             check   = self._check_for(entry)
             running = check is not None and check.running
 
-            # delete button — small square, bottom-right of the row
-            btn_sz = 22
-            del_rect = pygame.Rect(r.right - pad - btn_sz, ry + ih - pad - btn_sz, btn_sz, btn_sz)
+            list_clip = surf.get_clip()
+
+            # name line: name · orphans status · check button · check progress
+            ty   = ry + pad
+            txt  = font.render(entry['name'], True, FG)
+            m      = entry['meta']
+            orphan = orphan_status(m)
+            ot  = self._font_sm.render(f"orphans: {orphan}", True,
+                                       ORPHAN_COLORS.get(orphan, FG_DIM))
+            oy  = ty + txt.get_height() - ot.get_height()
+
+            # "Check orphans" / "Stop" button — inline after the status
+            chk_label = "Stop" if running else "Check orphans"
+            chk_h     = ot.get_height() + 4
+            ck        = self._font_sm.render(chk_label, True, FG)
+            chk_w     = ck.get_width() + 10
+
+            # delete button — right-aligned to the right edge of check button
+            btn_sz   = 22
+            chk_rx   = r.x + pad + txt.get_width() + 8 + ot.get_width() + 6
+            chk_rect = pygame.Rect(chk_rx, oy - 2, chk_w, chk_h)
+            del_rect = pygame.Rect(chk_rect.right - btn_sz,
+                                   chk_rect.bottom + 4, btn_sz, btn_sz)
+
+            self._check_rects.append((chk_rect, li))
             self._delete_rects.append((del_rect, li))
+
+            # clip text so it never overflows the row
+            text_clip = pygame.Rect(r.x, ry, r.width, ih).clip(list_clip)
+            surf.set_clip(text_clip)
+            surf.blit(txt, (r.x + pad, ty))
+            surf.blit(ot, (r.x + pad + txt.get_width() + 8, oy))
+            if check:
+                ct = self._font_sm.render(check.label(), True, check.color())
+                surf.blit(ct, (chk_rect.right + 6, oy))
+            surf.set_clip(list_clip)
+
+            # check button
+            chk_hov = chk_rect.collidepoint(mouse)
+            chk_bg  = ((140, 105, 50) if chk_hov else (110, 85, 40)) if running else \
+                      ((70, 110, 70)  if chk_hov else (50, 75, 50))
+            pygame.draw.rect(surf, chk_bg, chk_rect, border_radius=3)
+            pygame.draw.rect(surf, BOR, chk_rect, 1, border_radius=3)
+            surf.blit(ck, (chk_rect.centerx - ck.get_width() // 2,
+                           chk_rect.centery - ck.get_height() // 2))
+
+            # delete button
             del_hov = del_rect.collidepoint(mouse)
             pygame.draw.rect(surf, (120, 55, 55) if del_hov else (70, 45, 45),
                              del_rect, border_radius=4)
@@ -503,59 +637,27 @@ class LevelListPanel:
             surf.blit(xt, (del_rect.centerx - xt.get_width() // 2,
                            del_rect.centery - xt.get_height() // 2))
 
-            # clip text so it never runs under the delete button
-            text_clip = pygame.Rect(r.x, ry, del_rect.x - 6 - r.x, ih).clip(surf.get_clip())
-            list_clip = surf.get_clip()
-            surf.set_clip(text_clip)
-
-            # name line: name · orphans status · check button · check progress
-            ty   = ry + pad
-            txt  = font.render(entry['name'], True, FG)
-            surf.blit(txt, (r.x + pad, ty))
-            m      = entry['meta']
-            orphan = orphan_status(m)
-            ot  = self._font_sm.render(f"orphans: {orphan}", True,
-                                       ORPHAN_COLORS.get(orphan, FG_DIM))
-            ox  = r.x + pad + txt.get_width() + 8
-            oy  = ty + txt.get_height() - ot.get_height()
-            surf.blit(ot, (ox, oy))
-            ox += ot.get_width() + 6
-
-            # "Check orphans" / "Stop" button — inline after the status
-            chk_label = "Stop" if running else "Check orphans"
-            chk_h     = ot.get_height() + 4
-            ck        = self._font_sm.render(chk_label, True, FG)
-            chk_w     = ck.get_width() + 10
-            chk_rect  = pygame.Rect(ox, oy - 2, chk_w, chk_h)
-            self._check_rects.append((chk_rect, li))
-            chk_hov = chk_rect.collidepoint(mouse)
-            if running:
-                chk_bg = (140, 105, 50) if chk_hov else (110, 85, 40)
-            else:
-                chk_bg = (70, 110, 70) if chk_hov else (50, 75, 50)
-            surf.set_clip(list_clip)
-            pygame.draw.rect(surf, chk_bg, chk_rect, border_radius=3)
-            pygame.draw.rect(surf, BOR, chk_rect, 1, border_radius=3)
-            surf.blit(ck, (chk_rect.centerx - ck.get_width() // 2,
-                           chk_rect.centery - ck.get_height() // 2))
-            surf.set_clip(text_clip)
-
-            if check:
-                cx2 = chk_rect.right + 6
-                ct  = self._font_sm.render(check.label(), True, check.color())
-                surf.blit(ct, (cx2, oy))
             ty += txt.get_height() + 3
 
             # metadata lines
-            meta_lines = [
-                f"size: {m.get('size','?')}  {m.get('generator','?')}",
-                f"bat: {m.get('battery','?')}  target: {m.get('target','?')}",
-                f"pipeline: {m.get('pipeline','?')}  wall: {m.get('wall','?')}",
-            ]
-            for line in meta_lines:
-                t = self._font_sm.render(line, True, FG_DIM)
-                surf.blit(t, (r.x + pad, ty))
-                ty += t.get_height() + 1
+            fnt = self._font_sm
+            icon_sz = fnt.get_height() - 1
+
+            t = fnt.render(f"size: {m.get('size','?')}  {m.get('generator','?')}", True, FG_DIM)
+            surf.blit(t, (r.x + pad, ty))
+            ty += t.get_height() + 2
+
+            col2_x = r.x + pad + 96  # fixed x for right column
+
+            # row: [bat icon] N (%)   [target icon] N (%)
+            self._blit_icon_stat(surf, 'battery', m.get('battery', '?'), r.x + pad, ty, fnt, icon_sz)
+            self._blit_icon_stat(surf, 'target',  m.get('target',  '?'), col2_x,    ty, fnt, icon_sz)
+            ty += icon_sz + 2
+
+            # row: [pipeline icon] N (%)   [wall icon] N (%)
+            self._blit_icon_stat(surf, 'pipeline', m.get('pipeline', '?'), r.x + pad, ty, fnt, icon_sz)
+            self._blit_icon_stat(surf, 'wall',     m.get('wall',     '?'), col2_x,    ty, fnt, icon_sz)
+            ty += icon_sz + 1
             surf.set_clip(list_clip)
 
             # separator
@@ -592,11 +694,9 @@ class LevelListPanel:
 # ── action definition ─────────────────────────────────────────────────────────
 
 class Action:
-    def __init__(self, label, inputs, run_fn, panel=None):
-        self.label  = label
-        self.inputs = inputs   # list of (label_str, widget)
-        self.run_fn = run_fn
-        self.panel  = panel
+    def __init__(self, label, panel=None):
+        self.label = label
+        self.panel = panel
 
 
 # ── confirm dialog ────────────────────────────────────────────────────────────
@@ -915,6 +1015,7 @@ class LevelCheck:
         self.unused   = []   # tiles that can stay unpowered in a win state
         self.timeouts = []   # tiles left unsettled when the time limit ran out
         self.ok       = []   # tiles proven never to be orphans
+        self.broken   = []   # the solved map is wrong here (unpowered lamp / joined batteries)
         self.shapes   = None # tile shapes the result is valid for (from the worker)
         self.error    = None
         self.elapsed  = None
@@ -952,6 +1053,8 @@ class LevelCheck:
                     self.unused.append(msg[1])
                 elif msg[2] == 'timeout':
                     self.timeouts.append(msg[1])
+                elif msg[2] == 'broken':
+                    self.broken.append(msg[1])
             elif kind == 'done':
                 self.elapsed = msg[1]
                 self.running = False
@@ -980,6 +1083,7 @@ class LevelCheck:
         badge = (f"Orphan check running · {self.done}/{self.total} · {fmt(now - self.started)}"
                  if self.total else "Orphan check starting…")
         lines = [self.stage] if self.stage else []
+        lines += [f"broken ({r},{c})" for r, c in self.broken]
         lines += [f"orphan ({r},{c})" for r, c in self.unused]
         return badge, lines
 
@@ -993,6 +1097,8 @@ class LevelCheck:
             return f"{self.done}/{self.total}" if self.total else "…"
         if self.error:
             return "error"
+        if self.broken:
+            return "broken"
         if self.unused:
             return f"{len(self.unused)} unused"
         if self.timeouts:
@@ -1002,6 +1108,8 @@ class LevelCheck:
     def color(self):
         if self.running:
             return BOR_ACT
+        if self.broken:
+            return ORPHAN_COLORS['broken']
         if self.error or self.unused:
             return (190, 75, 75)
         if self.timeouts:
@@ -1165,14 +1273,17 @@ class Launcher:
         self._meta_icons = {}
         self.status         = ""
         self._busy          = False
-        self._sel           = 0
+        self._gen_started   = None     # time.monotonic() of the running generation
+        self._gen_proc      = None     # generate.py child process, while it runs
+        self._gen_stopped   = False    # Stop was pressed
+        self._gen_log       = []       # output of the last generation, shown under the button
         self._inline_editor   = None
         self._shuffled_win    = None
         self._confirm_dialog  = None
         self._pending_action     = None
         self._pending_cancel     = None
-        self._pending_edit_level = None
         self._pending_check_level = None
+        self._pending_select_level = None   # just generated: select + open it
         self._batch = None   # running batch check of a level range, see _pump_batch()
         self._batch_rect     = pygame.Rect(0, 0, 0, 0)
         self._filter_rects   = []   # [(rect, filter key)] above the level list
@@ -1181,8 +1292,6 @@ class Launcher:
         self._batch_hov      = False
         self._save_rect           = pygame.Rect(0, 0, 0, 0)
         self._save_hov            = False
-        self._update_rect         = pygame.Rect(0, 0, 0, 0)
-        self._update_hov          = False
         self._show_shuffled       = True
         self._show_shuffled_rect  = pygame.Rect(0, 0, 0, 0)
         self._list_col_w      = None   # None = auto
@@ -1199,14 +1308,14 @@ class Launcher:
             ("cols",          TextInput(str(config.GENERATE_COLS), step=1, min_val=3)),
             ("batteries %",   TextInput(bat_default, step=1, min_val=1, max_val=99)),
             ("targets %",     TextInput(str(DEFAULT_TARGETS_PCT), step=5, min_val=5, max_val=95)),
-            ("edit",          Checkbox()),
-            ("empty level",   Checkbox()),
             ("check orphans", Checkbox()),
         ]
         self._gen_btn_rect  = pygame.Rect(0, 0, 0, 0)
         self._gen_btn_hov   = False
         self._gen_algo      = "v3"          # selected algorithm
-        self._gen_algo_btns = ["v3"]        # available algorithms
+        # available algorithms: sat = CP-SAT / OR-Tools, empty = all-wall grid
+        self._gen_algo_btns = ["v3", "sat", "empty"]
+        self._gen_algo_names = {"sat": "sat (test)"}   # button text, where it differs
         self._gen_algo_rects = []           # [(rect, algo)] set each frame
         self._load_prefs()
 
@@ -1223,11 +1332,9 @@ class Launcher:
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _build_actions(self):
-        return [
-            Action("Edit Levels", [], self._do_edit_levels, panel=LevelListPanel()),
-        ]
+        return [Action("Edit Levels", panel=LevelListPanel())]
 
-    # ── generate v3 ───────────────────────────────────────────────────────────
+    # ── generate (v3 / sat / empty) ─────────────────────────────────────────
 
     def _do_generate(self):
         inputs = dict(self._gen_inputs)
@@ -1235,8 +1342,7 @@ class Launcher:
         cols  = inputs["cols"].get()
         bat   = inputs["batteries %"].get()
         tgt   = inputs["targets %"].get()
-        edit  = inputs["edit"].get()
-        empty = inputs["empty level"].get()
+        empty = self._gen_algo == "empty"
         check = inputs["check orphans"].get()
 
         try:
@@ -1262,25 +1368,60 @@ class Launcher:
                         cmd.append(str(config.GENERATE_ROWS))
                     cmd.append(cols)
                 if bat:
-                    cmd.append(f"batteries={bat}")
+                    # sat takes the field as a share of cells, v3 as a count
+                    key = "batteries-percent" if self._gen_algo == "sat" else "batteries"
+                    cmd.append(f"{key}={bat}")
                 if tgt:
                     cmd.append(f"targets-percent={tgt}")
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                out    = result.stdout + result.stderr
-                saved  = next((l for l in out.splitlines() if "Saved:" in l and ".json" in l), None)
-                self.status = saved.strip() if saved else (result.stderr.strip() or "Done")
+                # stream the output: sat reports its progress as "sat: ..." lines
+                proc = subprocess.Popen([cmd[0], "-u"] + cmd[1:], stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+                self._gen_proc = proc
+                if self._gen_stopped:          # Stop pressed before the process existed
+                    proc.terminate()
+                lines = []
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    lines.append(line)
+                    if line.strip():
+                        self._gen_log.append(line[4:].strip() if line.startswith("sat:")
+                                             else line.strip())
+                    if line.startswith("sat:") and not self._gen_stopped:
+                        self.status = line[4:].strip()
+                proc.wait()
+                saved  = next((l for l in lines if "Saved:" in l and ".json" in l), None)
+                if saved:
+                    self.status = saved.strip()
+                elif self._gen_stopped:
+                    self.status = "Generation stopped"
+                else:
+                    self.status = lines[-1].strip() if lines else "Done"
 
             if saved:
                 path = saved.strip().replace("Saved:", "").strip()
                 level_name = os.path.splitext(os.path.basename(path))[0]
-                if edit:
-                    self._pending_edit_level = level_name
+                self._pending_select_level = level_name
                 if check:
                     self._pending_check_level = level_name
         except Exception as e:
             self.status = str(e)
         finally:
+            self.status = f"{self.status}  ({self._gen_clock()})"
+            self._gen_log.append(self.status)
+            self._gen_proc = None
             self._busy = False
+
+    def _stop_generate(self):
+        self._gen_stopped = True
+        proc = self._gen_proc
+        if proc and proc.poll() is None:
+            proc.terminate()
+        self.status = "Stopping…"
+
+    def _gen_clock(self):
+        """Time since the generation started, as m:ss."""
+        secs = int(time.monotonic() - self._gen_started) if self._gen_started else 0
+        return f"{secs // 60}:{secs % 60:02d}"
 
     def _do_save_editor(self):
         if self._shuffled_win and self._shuffled_win.alive:
@@ -1291,9 +1432,7 @@ class Launcher:
         self._inline_editor.save()
         self._inline_editor._orphan_check  = self._inline_editor.read_orphan_check()
         self._inline_editor._original_meta = self._inline_editor._compute_meta()
-        cur_panel = self._actions[self._sel].panel
-        if cur_panel:
-            cur_panel.reload()   # keeps selection and scroll position
+        self._actions[0].panel.reload()
         self.status = f"Saved: {self._inline_editor._file_path}"
 
     def _has_unsaved_changes(self):
@@ -1303,9 +1442,6 @@ class Launcher:
         shuffled_changed = (self._shuffled_win is not None and
                             self._shuffled_win.has_shuffled_changes())
         return main_changed or shuffled_changed
-
-    def _do_edit_levels(self):
-        self._busy = False
 
     # ── check orphans: batch over unchecked levels ────────────────────────────
 
@@ -1382,7 +1518,7 @@ class Launcher:
             n = len(self._range_levels())
             options = ([f"Check all levels ({n})", f"Check all ({n})", str(n)] if n
                        else ["No levels", "—"])
-        return next((o for o in options if self.font.size(o)[0] <= width), options[-1])
+        return next((o for o in options if self._font_sm.size(o)[0] <= width), options[-1])
 
     def _draw_level_filters(self, panel, x, y, w):
         """2-column grid of filter rows above the level list. Returns height used."""
@@ -1449,19 +1585,98 @@ class Launcher:
         rows_used = (len(items) + 1) // 2
         total_h   = rows_used * (row_h + 2)
 
-        # refresh button — sits below the grid, left-aligned
+        # [refresh | Check all] — one row below the grid, half the width each
+        bh    = 26
+        by    = y + total_h + 2
+        half  = (w - gap) // 2
         stale = bool(panel.pinned)
         rt  = fnt.render("refresh", True, FG if stale else FG_DIM)
-        rw  = rt.get_width() + 12
-        rb  = pygame.Rect(x, y + total_h + 2, rw, row_h)
+        rb  = pygame.Rect(x, by, half, bh)
         self._filter_rects.append((rb, 'refresh'))
         hov = rb.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(self.screen, (BTN_HOV if hov else BTN_BG) if stale else DROP_BG,
                          rb, border_radius=4)
         pygame.draw.rect(self.screen, BOR, rb, 1, border_radius=4)
-        self.screen.blit(rt, (rb.x + 6, rb.centery - rt.get_height() // 2))
+        self.screen.blit(rt, (rb.centerx - rt.get_width() // 2,
+                              rb.centery - rt.get_height() // 2))
 
-        return total_h + row_h + 8
+        self._batch_rect = pygame.Rect(x + half + gap, by, w - half - gap, bh)
+        if self._batch:
+            b_col = (140, 105, 50) if self._batch_hov else (110, 85, 40)
+        else:
+            b_col = BTN_HOV if self._batch_hov else BTN_BG
+        pygame.draw.rect(self.screen, b_col, self._batch_rect, border_radius=4)
+        bt = fnt.render(self._batch_label(self._batch_rect.width - 12), True, FG)
+        clip = self.screen.get_clip()
+        self.screen.set_clip(self._batch_rect.inflate(-8, 0))
+        self.screen.blit(bt, (max(self._batch_rect.x + 6,
+                                   self._batch_rect.centerx - bt.get_width() // 2),
+                               self._batch_rect.centery - bt.get_height() // 2))
+        self.screen.set_clip(clip)
+
+        return total_h + bh + 8
+
+    @staticmethod
+    def _wrap(text, fnt, max_w):
+        """Word-wrap `text` to lines no wider than max_w pixels."""
+        lines, cur = [], ""
+        for word in text.split(" "):
+            cand = f"{cur} {word}" if cur else word
+            if cur and fnt.size(cand)[0] > max_w:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = cand
+        lines.append(cur)
+        return lines
+
+    def _draw_sat_preview(self, x, y, w):
+        """What the sat shares imply (junctions = lamps - batteries, so the
+        rest are chain tiles), plus warnings. Returns the height used."""
+        from app.services.DataMapGeneratorSat import composition
+        inputs = dict(self._gen_inputs)
+        try:
+            info = composition(int(inputs["rows"].get()), int(inputs["cols"].get()),
+                               float(inputs["batteries %"].get()),
+                               float(inputs["targets %"].get()))
+        except (TypeError, ValueError):
+            return 0
+        fnt = self._font_sm
+        lines = [(f"{info['batteries']} batteries · {info['lamps']} lamps · "
+                  f"{info['junctions']} junctions · {info['chains_pct']:.0f}% chains", FG_DIM)]
+        warn = (230, 170, 70)
+        if info['error']:
+            lines.append((info['error'], (230, 100, 90)))
+        else:
+            if info['forced_single']:
+                lines.append((f"≥ {info['forced_single']} networks will have one lamp", warn))
+            if info['chains_pct'] > 50:
+                lines.append(("mostly chains — raise lamps % for more branching", warn))
+        lh, h = fnt.get_linesize(), 0
+        for text, color in lines:
+            for part in self._wrap(text, fnt, w):
+                self.screen.blit(fnt.render(part, True, color), (x, y + h))
+                h += lh
+        return h + 6
+
+    def _draw_gen_log(self, rect):
+        """Output of the last generation, word-wrapped; the newest lines stay
+        in view."""
+        if rect.height < 20:
+            return
+        pygame.draw.rect(self.screen, INPUT_BG, rect, border_radius=4)
+        pygame.draw.rect(self.screen, BOR, rect, 1, border_radius=4)
+        fnt   = self._font_sm
+        max_w = rect.width - 12
+        wrapped = [part for line in list(self._gen_log)
+                   for part in self._wrap(line, fnt, max_w)]
+        lh    = fnt.get_linesize()
+        shown = wrapped[-max(1, (rect.height - 8) // lh):]
+        clip = self.screen.get_clip()
+        self.screen.set_clip(rect.inflate(-4, -4))
+        for k, text in enumerate(shown):
+            self.screen.blit(fnt.render(text, True, FG_DIM), (rect.x + 6, rect.y + 4 + k * lh))
+        self.screen.set_clip(clip)
 
     def _toggle_level_filter(self, key):
         panel = self._levels_panel()
@@ -1528,7 +1743,7 @@ class Launcher:
         from generate import write_orphan_check
         try:
             saved = write_orphan_check(path, check.unused, check.timeouts,
-                                       shapes=check.shapes)
+                                       shapes=check.shapes, broken=check.broken)
         except OSError:
             saved = False
         if not saved:
@@ -1548,6 +1763,10 @@ class Launcher:
         if check.error:
             return f"{name}: check failed — {check.error}"
         took = f" ({check.elapsed:.1f}s)" if check.elapsed is not None else ""
+        if check.broken:
+            cells = ", ".join(f"({r},{c})" for r, c in check.broken)
+            return (f"{name}: broken — the solved map has unpowered tiles, loose sides "
+                    f"or batteries wired together: {cells}")
         if check.unused:
             cells = ", ".join(f"({r},{c})" for r, c in check.unused)
             more = " — time limit, there may be more" if check.timeouts else ""
@@ -1556,29 +1775,61 @@ class Launcher:
             return f"{name}: limit achieved — not proved in the time limit{took}"
         return f"{name}: success — no win leaves tiles unused{took}"
 
-    def _request_update(self):
-        """Update button: re-read levels from disk and reload the open level."""
-        def _reload():
-            panel = self._actions[self._sel].panel
-            if panel:
-                panel.reload()
-            if self._inline_editor is not None:
-                path = self._inline_editor._file_path
-                if os.path.exists(path):
-                    self._open_editor(os.path.splitext(os.path.basename(path))[0])
-                else:
-                    self._inline_editor = None
-                    if self._shuffled_win:
-                        self._shuffled_win.close()
-                        self._shuffled_win = None
-            self.status = "Levels reloaded from disk"
+    def _open_generated(self, level_name):
+        """A level was just generated: select it in the list and open it, as a
+        click on its row would (asking first if the editor has unsaved edits)."""
+        panel = self._levels_panel()
+        panel.focus(level_name)
+        if panel.selected < 0:
+            return
+
+        def _open(name=level_name, p=panel):
+            self._open_editor(name)
+            p.editing = p.selected
 
         if self._has_unsaved_changes():
             self._confirm_dialog = ConfirmDialog("Level has unsaved changes.")
-            self._pending_action = _reload
-            self._pending_cancel = None
+            self._pending_action = _open
+            self._pending_cancel = lambda p=panel: setattr(p, 'selected', p.editing)
         else:
-            _reload()
+            _open()
+
+    def _sync_open_level(self, changed):
+        """Levels `changed` on disk (LevelListPanel.poll_disk): bring the level
+        open in the editor up to date. A write that kept its tiles (our own
+        save, an orphan check result) only refreshes the check status; new
+        tiles are loaded unless the editor has unsaved edits, which win."""
+        ed = self._inline_editor
+        if ed is None:
+            return
+        name = os.path.splitext(os.path.basename(ed._file_path))[0]
+        if name not in changed or self._editor_locked():
+            return
+        if not os.path.exists(ed._file_path):
+            if self._has_unsaved_changes():
+                self.status = f"{name} was deleted on disk — Save writes it back"
+                return
+            self._inline_editor = None
+            if self._shuffled_win:
+                self._shuffled_win.close()
+                self._shuffled_win = None
+            self.status = f"{name} was deleted on disk"
+            return
+        from generate import load_level_file
+        try:
+            meet, _, _ = load_level_file(ed._file_path)
+        except Exception:
+            return          # caught mid-write by hand; the next poll retries
+        on_disk = tuple((c['name'], c['rotation'], c['type']) for row in meet for c in row)
+        if on_disk == ed._saved_state:
+            ed._orphan_check  = ed.read_orphan_check()
+            ed._original_meta = dict(ed._original_meta, orphans=ed._orphan_check)
+            return
+        if self._has_unsaved_changes():
+            self.status = f"{name} changed on disk — your unsaved edits are kept"
+            return
+        self._open_editor(name)
+        self.status = f"{name} changed on disk — reloaded"
 
     def _open_editor(self, level_name):
         from generate import load_level_file
@@ -1645,9 +1896,7 @@ class Launcher:
             if self._inline_editor and self._inline_editor._file_path == old_json:
                 self._inline_editor._file_path = os.path.join(LEVELS_DIR, f"{new_stem}.json")
 
-        cur_panel = self._actions[self._sel].panel
-        if cur_panel:
-            cur_panel.reload()
+        self._actions[0].panel.reload()
         self.status = f"Deleted: {name}"
 
     def _save_prefs(self):
@@ -1657,12 +1906,12 @@ class Launcher:
         except Exception:
             data = {}
         data["window_size"] = list(self.screen.get_size())
-        data["selected"]    = self._sel
         data.setdefault("Edit Levels", {})
         data["Edit Levels"]["list_col_w"]    = self._list_col_w
         data["Edit Levels"]["show_shuffled"] = self._show_shuffled
         data["Edit Levels"]["filters"]       = sorted(self._levels_panel().filters)
         data.setdefault("Generate", {})
+        data["Generate"]["algo"] = self._gen_algo
         for label, widget in self._gen_inputs:
             if isinstance(widget, TextInput):
                 data["Generate"][label] = widget.value
@@ -1689,9 +1938,10 @@ class Launcher:
                 saved = list(saved) + ['success', 'failed', 'limit achieved']
             saved = ['limit achieved' if f == 'incomplete' else f for f in saved]
             self._levels_panel().filters = {f for f in saved if f in LEVEL_FILTERS}
-        self._sel = 0
         self._actions[0].panel._refresh()
         gen_prefs = data.get("Generate", {})
+        if gen_prefs.get("algo") in self._gen_algo_btns:
+            self._gen_algo = gen_prefs["algo"]
         for label, widget in self._gen_inputs:
             if label not in gen_prefs:
                 continue
@@ -1699,14 +1949,6 @@ class Launcher:
                 widget.value = gen_prefs[label]
             elif isinstance(widget, Checkbox):
                 widget.checked = gen_prefs[label]
-
-    def _run_selected(self):
-        if self._busy:
-            return
-        self._save_prefs()
-        self._busy  = True
-        self.status = "Running…"
-        threading.Thread(target=self._actions[self._sel].run_fn, daemon=True).start()
 
     def _get_icon(self, path, size):
         key = (path, size)
@@ -1757,18 +1999,14 @@ class Launcher:
 
     # ── drawing ───────────────────────────────────────────────────────────────
 
-    def _draw(self, nav_hov, run_hov):
+    def _draw(self):
         sw, sh = self.screen.get_size()
         self._orphan_rect = pygame.Rect(0, 0, 0, 0)
         self.screen.fill(BG)
 
-        # header — title only (no tabs)
         pygame.draw.rect(self.screen, HEADER, (0, 0, sw, HEADER_H))
         t = self.font_h.render("ConnectorGame", True, FG)
         self.screen.blit(t, (PAD, (HEADER_H - t.get_height()) // 2))
-
-        nav_rects = []
-        run_rect  = pygame.Rect(0, 0, 0, 0)
 
         action          = self._actions[0]
         content_h_inner = sh - HEADER_H - STATUS_H - PAD * 2
@@ -1784,7 +2022,7 @@ class Launcher:
         ab_gap = 4
         abx    = gen_x
         for algo in self._gen_algo_btns:
-            at = self._font_sm.render(algo, True, FG)
+            at = self._font_sm.render(self._gen_algo_names.get(algo, algo), True, FG)
             ab_w = at.get_width() + 12
             ab_r = pygame.Rect(abx, gy, ab_w, ab_h)
             self._gen_algo_rects.append((ab_r, algo))
@@ -1802,19 +2040,28 @@ class Launcher:
             widget.draw(self.screen, self.font, gen_x + GEN_LBL_W, gy, gen_inp)
             gy += ROW_H
 
-        # Generate button at the bottom of the gen column
-        gen_btn_y = sh - STATUS_H - PAD - RUN_H
+        if self._gen_algo == "sat":
+            gy += self._draw_sat_preview(gen_x, gy, GEN_COL_W)
+
+        # Generate button right under the inputs, the generation log below it
+        gen_btn_y = gy + 4
         self._gen_btn_rect = pygame.Rect(gen_x, gen_btn_y, GEN_COL_W, RUN_H)
-        if self._busy:
+        if self._busy and self._gen_stopped:
             gc, gfg = BTN_DIS, FG_DIS
         elif self._gen_btn_hov:
             gc, gfg = BTN_HOV, FG
         else:
             gc, gfg = BTN_BG, FG
         pygame.draw.rect(self.screen, gc, self._gen_btn_rect, border_radius=6)
-        gt = self.font.render("Generate v3", True, gfg)
+        gen_label = (f"Stop · {self._gen_clock()}" if self._busy
+                     else f"Generate {self._gen_algo_names.get(self._gen_algo, self._gen_algo)}")
+        gt = self.font.render(gen_label, True, gfg)
         self.screen.blit(gt, (self._gen_btn_rect.centerx - gt.get_width() // 2,
                                self._gen_btn_rect.centery - gt.get_height() // 2))
+
+        log_y = self._gen_btn_rect.bottom + PAD
+        self._draw_gen_log(pygame.Rect(gen_x, log_y, GEN_COL_W,
+                                       sh - STATUS_H - PAD - log_y))
 
         # separator after gen column
         gen_sep_x = PAD + GEN_COL_W + PAD // 2
@@ -1832,34 +2079,8 @@ class Launcher:
 
         filt_h = self._draw_level_filters(action.panel, list_area_x, HEADER_H + PAD, col_w)
         list_y = HEADER_H + PAD + filt_h
-        # reserve one row for [Update | Check] at the bottom
-        list_h = content_h_inner - filt_h - RUN_H - PAD
+        list_h = content_h_inner - filt_h
         action.panel.draw(self.screen, self.font, list_area_x, list_y, col_w, list_h)
-
-        # [Update] and [Check all] in one row below the list
-        btn_row_y = list_y + list_h + PAD
-        upd_w = max(70, col_w // 3)
-        chk_w = col_w - upd_w - PAD
-        self._update_rect = pygame.Rect(list_area_x, btn_row_y, upd_w, RUN_H)
-        pygame.draw.rect(self.screen, BTN_HOV if self._update_hov else BTN_BG,
-                         self._update_rect, border_radius=6)
-        ut = self.font.render("Update", True, FG)
-        self.screen.blit(ut, (self._update_rect.centerx - ut.get_width() // 2,
-                               self._update_rect.centery - ut.get_height() // 2))
-
-        self._batch_rect = pygame.Rect(list_area_x + upd_w + PAD, btn_row_y, chk_w, RUN_H)
-        if self._batch:
-            b_col = (140, 105, 50) if self._batch_hov else (110, 85, 40)
-        else:
-            b_col = BTN_HOV if self._batch_hov else BTN_BG
-        pygame.draw.rect(self.screen, b_col, self._batch_rect, border_radius=6)
-        bt = self.font.render(self._batch_label(self._batch_rect.width - 12), True, FG)
-        clip = self.screen.get_clip()
-        self.screen.set_clip(self._batch_rect.inflate(-8, 0))
-        self.screen.blit(bt, (max(self._batch_rect.x + 6,
-                                   self._batch_rect.centerx - bt.get_width() // 2),
-                               self._batch_rect.centery - bt.get_height() // 2))
-        self.screen.set_clip(clip)
 
         # resize handle on list column's right edge
         handle_rect = pygame.Rect(list_area_x + col_w - 5, HEADER_H + PAD, 10, list_h)
@@ -1945,7 +2166,7 @@ class Launcher:
             lock_h = 0
             if locked:
                 lock_check = self._levels_panel()._checks.get(level_name)
-                lock_badge, lock_tiles = lock_check.progress_lines()
+                lock_badge, _ = lock_check.progress_lines()
                 lock_h = LOCK_BANNER_H
                 editor_y += lock_h
             editor_h = sh - STATUS_H - editor_y - PAD
@@ -1953,9 +2174,6 @@ class Launcher:
             show_shuffled = self._shuffled_win is not None and not locked
             if self._shuffled_win and locked:
                 self._shuffled_win.rect = pygame.Rect(0, 0, 0, 0)
-            if locked:
-                ed_w = max(100, detail_w - TILE_LOG_W - PAD)
-                ed_x = detail_x + detail_w - ed_w
             if show_shuffled:
                 half = (detail_w - PAD) // 2
                 self._shuffled_win.marks = self._inline_editor.orphan_marks()
@@ -1980,8 +2198,6 @@ class Launcher:
                 _dim_locked(self.screen, er)
                 _draw_lock_banner(self.screen, (left + right) // 2, top, lock_badge,
                                   "editing is locked — press Stop in the list to edit now")
-                _draw_tile_log(self.screen, detail_x, er.y, ed_x - PAD - detail_x,
-                               sh - STATUS_H - PAD - er.y, lock_tiles)
             nt = self.font_h.render(level_name, True, FG)
             self.screen.blit(nt, ((left + right - nt.get_width()) // 2,
                                   top - NAME_H + (NAME_H - nt.get_height()) // 2))
@@ -2000,16 +2216,10 @@ class Launcher:
         if self._confirm_dialog:
             self._confirm_dialog.draw(self.screen)
 
-        return nav_rects, run_rect
-
     # ── loop ─────────────────────────────────────────────────────────────────
 
     def run(self):
-        clock     = pygame.time.Clock()
-        nav_rects = []
-        run_rect  = pygame.Rect(0, 0, 0, 0)
-        nav_hov   = -1
-        run_hov   = False
+        clock = pygame.time.Clock()
 
         while True:
             for event in pygame.event.get():
@@ -2058,15 +2268,12 @@ class Launcher:
                     self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
                     self._save_prefs()
                     continue
-                cur_action = self._actions[self._sel]
+                cur_action = self._actions[0]
 
                 if event.type == pygame.MOUSEMOTION:
                     pos = event.pos
-                    nav_hov = -1
-                    run_hov = False
                     self._gen_btn_hov = self._gen_btn_rect.collidepoint(pos)
                     self._save_hov   = self._save_rect.collidepoint(pos)
-                    self._update_hov = self._update_rect.collidepoint(pos)
                     self._batch_hov  = self._batch_rect.collidepoint(pos)
                     self._orphan_hov = self._orphan_rect.collidepoint(pos)
                     self._resize_hov = self._resize_handle.collidepoint(pos)
@@ -2099,19 +2306,22 @@ class Launcher:
                     for ab_r, algo in self._gen_algo_rects:
                         if ab_r.collidepoint(pos):
                             self._gen_algo = algo
+                            self._save_prefs()
                             break
                     # gen column: inputs
-                    consumed = False
                     for _, w in self._gen_inputs:
-                        if isinstance(w, Dropdown):
-                            consumed = w.handle(event) or consumed
-                    if not consumed:
-                        for _, w in self._gen_inputs:
-                            w.handle(event)
+                        w.handle(event)
                     # Generate button
+                    if self._gen_btn_rect.collidepoint(pos) and self._busy:
+                        if not self._gen_stopped:
+                            self._stop_generate()
+                        continue
                     if self._gen_btn_rect.collidepoint(pos) and not self._busy:
                         self._save_prefs()
                         self._busy  = True
+                        self._gen_started = time.monotonic()
+                        self._gen_stopped = False
+                        self._gen_log = []
                         self.status = "Generating…"
                         threading.Thread(target=self._do_generate, daemon=True).start()
                         continue
@@ -2134,9 +2344,6 @@ class Launcher:
                                     os.path.join(LEVELS_DIR, f"{name}.json"))
                                 if shuffled_data:
                                     self._shuffled_win = ShuffledView(shuffled_data)
-                        continue
-                    if self._update_rect.collidepoint(pos):
-                        self._request_update()
                         continue
                     if self._inline_editor and self._orphan_rect.collidepoint(pos):
                         name = os.path.splitext(os.path.basename(self._inline_editor._file_path))[0]
@@ -2209,15 +2416,13 @@ class Launcher:
                 for _, w in self._gen_inputs:
                     w.handle(event)
 
-            if self._pending_edit_level and not self._busy:
-                level_name = self._pending_edit_level
-                self._pending_edit_level = None
-                panel = self._actions[0].panel
-                panel._refresh()
-                names = [l['name'] for l in panel._levels]
-                if level_name in names:
-                    panel.selected = names.index(level_name)
-                self._open_editor(level_name)
+            changed = self._levels_panel().poll_disk()
+            if changed:
+                self._sync_open_level(changed)
+
+            if self._pending_select_level and not self._busy:
+                self._open_generated(self._pending_select_level)
+                self._pending_select_level = None
 
             if self._pending_check_level and not self._busy:
                 level_name = self._pending_check_level
@@ -2238,7 +2443,7 @@ class Launcher:
                     for name, check in a.panel.poll_checks():
                         self.status = self._finish_check(a.panel, name, check)
 
-            nav_rects, run_rect = self._draw(nav_hov, run_hov)
+            self._draw()
             pygame.display.flip()
             clock.tick(30)
 

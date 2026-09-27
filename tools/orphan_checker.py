@@ -156,6 +156,10 @@ def patterns_of(cells):
     return out
 
 
+def lv_rc(level, idx):
+    return divmod(idx, level.cols)
+
+
 def log_path_for(level_path):
     """logs/orphans/<level>.log"""
     return os.path.join(LOG_DIR, os.path.splitext(os.path.basename(level_path))[0] + '.log')
@@ -165,7 +169,8 @@ def log_path_for(level_path):
 
 def build_model(level):
     """CP-SAT model of every win state of `level` (all lamps powered).
-    Returns (model, pw) — pw[v] is true exactly when v is powered."""
+    Returns (model, pw, open_) — pw[v] is true exactly when v is powered,
+    open_[v][d] when side d (U, R, D, L) of v has a connector."""
     from ortools.sat.python import cp_model
     m = cp_model.CpModel()
     n = level.n
@@ -215,13 +220,16 @@ def build_model(level):
 
     for t in level.targets:
         m.Add(pw[t] == 1)
-    return m, pw
+    return m, pw, open_
 
 
 class CheckJob:
     """A prepared orphan check of one level.
 
     `run()` yields ((row, col), shape, status) as results come in:
+        'broken'  — the solved map itself is wrong at this tile (an unpowered
+                    lamp or other tile, a side that connects to nothing, or
+                    batteries wired together); nothing else is checked
         'unused'  — the tile can stay unpowered in a win state (a real orphan)
         'ok'      — proven: it never can
         'timeout' — the time limit ran out before that was settled
@@ -249,6 +257,7 @@ class CheckJob:
         pats = patterns_of(cells)
         dsu = DSU(self.level.n)
         self.dangling = 0
+        loose = set()            # tiles with a side that connects to nothing
         for a in range(self.level.n):
             for d in (U, R, D, L):
                 if not pats[a][d]:
@@ -256,10 +265,47 @@ class CheckJob:
                 b = self.level.neighbors[a][d]
                 if b is None or not pats[b][OPP[d]]:
                     self.dangling += 1
+                    loose.add(a)
                 elif d in (R, D):
                     dsu.union(a, b)
         roots = {dsu.find(x) for x in self.level.batteries}
         self.all_targets_ok = all(dsu.find(t) in roots for t in self.level.targets)
+
+        # a broken solved map makes the orphan search meaningless (with no win
+        # state at all, "no win leaves a tile unpowered" is vacuously true), so
+        # run() stops at once and reports these cells as 'broken':
+        #   lamps the solved map leaves unpowered
+        #   other tiles it leaves unpowered — a tile connected to nothing, or a
+        #     group of tiles wired only to each other (walls don't count)
+        #   tiles with a loose side: a connector facing the border or a
+        #     neighbour without the matching connector
+        #   batteries wired to another battery
+        self.unpowered_lamps = sorted(lv_rc(self.level, t) for t in self.level.targets
+                                      if dsu.find(t) not in roots)
+        self.unpowered_tiles = sorted(lv_rc(self.level, v) for v in self.level.pipeline_cells()
+                                      if dsu.find(v) not in roots)
+        by_root = {}
+        for b in self.level.batteries:
+            by_root.setdefault(dsu.find(b), []).append(b)
+        self.joined_batteries = sorted(lv_rc(self.level, b) for group in by_root.values()
+                                       if len(group) > 1 for b in group)
+        self.loose_tiles = sorted(lv_rc(self.level, v) for v in loose)
+        self.broken = sorted(set(self.unpowered_lamps) | set(self.unpowered_tiles)
+                             | set(self.loose_tiles) | set(self.joined_batteries))
+
+    def problems(self):
+        """Human-readable reasons the solved map is broken ([] if it isn't)."""
+        fmt = lambda cells: " ".join(f"({r},{c})" for r, c in cells)
+        out = []
+        if self.unpowered_lamps:
+            out.append(f"unpowered lamps {fmt(self.unpowered_lamps)}")
+        if self.unpowered_tiles:
+            out.append(f"tiles connected to no battery {fmt(self.unpowered_tiles)}")
+        if self.loose_tiles:
+            out.append(f"tiles with a loose side {fmt(self.loose_tiles)}")
+        if self.joined_batteries:
+            out.append(f"batteries wired together {fmt(self.joined_batteries)}")
+        return out
 
     @property
     def total(self):
@@ -267,6 +313,10 @@ class CheckJob:
 
     def run(self, on_progress=None):
         """on_progress(stage_text) is called as each solve starts."""
+        if self.broken:
+            for r, c in self.broken:
+                yield (r, c), self.level.name[r][c], 'broken'
+            return
         from ortools.sat.python import cp_model
         lv = self.level
         shape = lambda v: lv.name[v // lv.cols][v % lv.cols]
@@ -282,7 +332,7 @@ class CheckJob:
                       f"{len(lv.targets)} lamps, {self.total} pipeline tiles\n"
                       f"limit {self.time_limit:g}s, {self.workers} workers\n\n")
         try:
-            m, pw = build_model(lv)
+            m, pw, _ = build_model(lv)
             solver = cp_model.CpSolver()
             solver.parameters.num_workers = self.workers
             while True:
@@ -362,7 +412,8 @@ def check_file(path, time_limit=DEFAULT_TIME_LIMIT, workers=DEFAULT_WORKERS):
             elif status == 'timeout':
                 timeouts.append(cell)
         return {'path': path, 'unused': sorted(unused), 'ok': sorted(job.ok_cells),
-                'timeouts': timeouts, 'shapes': job.shapes, 'solves': job.solves,
+                'timeouts': timeouts, 'broken': job.broken, 'problems': job.problems(),
+                'shapes': job.shapes, 'solves': job.solves,
                 'elapsed': job.elapsed, 'error': None}
     except Exception as e:
         return {'path': path, 'error': str(e)}
@@ -375,6 +426,8 @@ def summarize(res):
         return f"{name}: error — {res['error']}"
     fmt = lambda cells: " ".join(f"({r},{c})" for r, c in cells)
     took = f"{res['elapsed']:.1f}s"
+    if res.get('broken'):
+        return f"{name}: broken — {'; '.join(res.get('problems') or [])}"
     if res['unused']:
         more = " (time limit — there may be more)" if res['timeouts'] else ""
         return (f"{name}: failed — {len(res['unused'])} orphans{more}: "
@@ -391,7 +444,7 @@ def store_result(res):
     if res['error']:
         return summarize(res)
     if not write_orphan_check(res['path'], res['unused'], res['timeouts'],
-                              shapes=res.get('shapes')):
+                              shapes=res.get('shapes'), broken=res.get('broken')):
         name = os.path.splitext(os.path.basename(res['path']))[0]
         return f"{name}: tiles changed during the check, not saved"
     return summarize(res)
@@ -432,6 +485,8 @@ def main():
           f"{len(lv.targets)} targets, {job.total} pipeline cells")
     print(f"Solved map: all targets powered = {job.all_targets_ok}, "
           f"dangling connectors = {job.dangling}")
+    for p in job.problems():
+        print(f"BROKEN: {p} — the orphan search is skipped")
 
     unused, timeouts = [], []
     for (gi, gj), shape, status in job.run():
@@ -448,7 +503,8 @@ def main():
           f"Orphans: {len(unused)}. Proved: {job.proved}")
     if args.write:
         print(store_result({'path': path, 'unused': unused, 'ok': sorted(job.ok_cells),
-                            'timeouts': timeouts, 'shapes': job.shapes,
+                            'timeouts': timeouts, 'broken': job.broken,
+                            'problems': job.problems(), 'shapes': job.shapes,
                             'elapsed': job.elapsed, 'error': None}))
 
 
