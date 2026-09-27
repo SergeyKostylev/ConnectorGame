@@ -177,9 +177,8 @@ def save_level_to(meet_map, shuffled_map, path, version):
 
 
 # ── orphan check result (tools/orphan_checker.py) stored in metadata ─────────
-# orphan_check:  "success" | "failed" | "limit achieved" | "broken"
-#                (absent = not checked; older files may say "incomplete" for
-#                "limit achieved")
+# orphan_check:  "success" | "failed" | "broken"   (absent = not checked; older
+#                files may say "limit achieved"/"incomplete" — shown as not checked)
 # orphan_cells:  tiles that can stay unpowered in a win, or — when "broken" —
 #                the tiles that break the solved map: unpowered tiles, tiles
 #                with a loose side, batteries wired together   (absent when none)
@@ -234,7 +233,7 @@ def parse_cells(text):
     return [(int(r), int(c)) for r, c in re.findall(r'\((\d+),(\d+)\)', text or '')]
 
 
-def write_orphan_check(path, unused, unresolved=(), shapes=None, broken=()):
+def write_orphan_check(path, unused, shapes=None, broken=()):
     """Store an orphan check in the level's metadata, as a transaction: under
     level_lock(), re-read the file and write only if its tile shapes are still
     `shapes` (the level the check looked at). Maps and other metadata keep
@@ -242,7 +241,7 @@ def write_orphan_check(path, unused, unresolved=(), shapes=None, broken=()):
 
     broken:     the solved map is wrong at these tiles       -> "broken"
     unused:     tiles that can stay unpowered in a win state -> "failed"
-    unresolved: tiles the check could not settle in time     -> "limit achieved"
+    neither:                                                 -> "success"
     """
     with level_lock():
         with open(path) as f:
@@ -253,8 +252,6 @@ def write_orphan_check(path, unused, unresolved=(), shapes=None, broken=()):
             orphan = {'orphan_check': 'broken', 'orphan_cells': _format_cells(sorted(broken))}
         elif unused:
             orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(sorted(unused))}
-        elif unresolved:
-            orphan = {'orphan_check': 'limit achieved'}
         else:
             orphan = {'orphan_check': 'success'}
         _atomic_write(path, _format_level_json(_with_orphan_meta(obj['metadata'], orphan),

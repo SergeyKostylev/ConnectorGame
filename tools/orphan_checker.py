@@ -42,8 +42,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import app.config as config
 
-# seconds one level's solving may take; past it the check reports what it has
-# and the remaining tiles stay unresolved (level: 'limit achieved')
+# seconds one level's solving may take; past it, orphans found so far still make
+# the level 'failed', but with none found the check fails with a TimeoutError
+# (nothing is stored). One model settles a level in well under a second.
 DEFAULT_TIME_LIMIT = 120.0
 # CP-SAT search threads per level
 DEFAULT_WORKERS = 8
@@ -232,9 +233,9 @@ class CheckJob:
                     batteries wired together); nothing else is checked
         'unused'  — the tile can stay unpowered in a win state (a real orphan)
         'ok'      — proven: it never can
-        'timeout' — the time limit ran out before that was settled
     Orphans come first, as each solve finds them; the 'ok' tiles all arrive at
-    the end, when the final solve proves there are no others."""
+    the end, when the final solve proves there are no others. If the time limit
+    runs out with no orphan found, run() raises TimeoutError."""
 
     def __init__(self, level_path, time_limit=DEFAULT_TIME_LIMIT, workers=DEFAULT_WORKERS,
                  log_path=None):
@@ -377,11 +378,14 @@ class CheckJob:
                     yield lv.rc(v), shape(v), 'unused'
                 m.Add(guard == 0)
 
-            rest = [v for v in self.candidates if v not in self.unused_cells]
             if self.proved:
+                rest = [v for v in self.candidates if v not in self.unused_cells]
                 self.ok_cells = set(rest)
-            for v in rest:
-                yield lv.rc(v), shape(v), 'ok' if self.proved else 'timeout'
+                for v in rest:
+                    yield lv.rc(v), shape(v), 'ok'
+            elif not self.unused_cells:
+                raise TimeoutError(f"check timed out after {self.time_limit:g}s "
+                                   f"with nothing proved")
         finally:
             self.elapsed = time.time() - t0
             if log:
@@ -405,14 +409,9 @@ def check_file(path, time_limit=DEFAULT_TIME_LIMIT, workers=DEFAULT_WORKERS):
     """Full check of one level file (for batch runs)."""
     try:
         job = CheckJob(path, time_limit, workers, log_path=log_path_for(path))
-        unused, timeouts = [], []
-        for cell, _shape, status in job.run():
-            if status == 'unused':
-                unused.append(cell)
-            elif status == 'timeout':
-                timeouts.append(cell)
+        unused = [cell for cell, _shape, status in job.run() if status == 'unused']
         return {'path': path, 'unused': sorted(unused), 'ok': sorted(job.ok_cells),
-                'timeouts': timeouts, 'broken': job.broken, 'problems': job.problems(),
+                'broken': job.broken, 'problems': job.problems(),
                 'shapes': job.shapes, 'solves': job.solves,
                 'elapsed': job.elapsed, 'error': None}
     except Exception as e:
@@ -429,11 +428,8 @@ def summarize(res):
     if res.get('broken'):
         return f"{name}: broken — {'; '.join(res.get('problems') or [])}"
     if res['unused']:
-        more = " (time limit — there may be more)" if res['timeouts'] else ""
-        return (f"{name}: failed — {len(res['unused'])} orphans{more}: "
+        return (f"{name}: failed — {len(res['unused'])} orphans: "
                 f"{fmt(res['unused'])} ({took})")
-    if res['timeouts']:
-        return f"{name}: limit achieved — not proved in {took}"
     return f"{name}: success ({took})"
 
 
@@ -443,7 +439,7 @@ def store_result(res):
     from generate import write_orphan_check
     if res['error']:
         return summarize(res)
-    if not write_orphan_check(res['path'], res['unused'], res['timeouts'],
+    if not write_orphan_check(res['path'], res['unused'],
                               shapes=res.get('shapes'), broken=res.get('broken')):
         name = os.path.splitext(os.path.basename(res['path']))[0]
         return f"{name}: tiles changed during the check, not saved"
@@ -459,7 +455,7 @@ def main():
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 4) // 4),
                     help='levels checked in parallel (batch mode)')
     ap.add_argument('--time-limit', type=float, default=DEFAULT_TIME_LIMIT,
-                    help='seconds one level may take before it counts as unresolved')
+                    help='seconds one level may take; past it the check fails')
     ap.add_argument('--workers', type=int, default=DEFAULT_WORKERS,
                     help='CP-SAT search threads per level')
     ap.add_argument('--verbose', action='store_true', help='also list tiles that are fine')
@@ -488,22 +484,24 @@ def main():
     for p in job.problems():
         print(f"BROKEN: {p} — the orphan search is skipped")
 
-    unused, timeouts = [], []
-    for (gi, gj), shape, status in job.run():
-        if status == 'unused':
-            unused.append((gi, gj))
-            print(f"cell ({gi},{gj}) [{shape}]: WITNESS FOUND — a valid win state "
-                  f"exists where this tile is unpowered")
-        elif status == 'timeout':
-            timeouts.append((gi, gj))
-        elif args.verbose:
-            print(f"cell ({gi},{gj}) [{shape}]: can't be left unpowered")
+    unused = []
+    try:
+        for (gi, gj), shape, status in job.run():
+            if status == 'unused':
+                unused.append((gi, gj))
+                print(f"cell ({gi},{gj}) [{shape}]: WITNESS FOUND — a valid win state "
+                      f"exists where this tile is unpowered")
+            elif status == 'ok' and args.verbose:
+                print(f"cell ({gi},{gj}) [{shape}]: can't be left unpowered")
+    except TimeoutError as e:
+        print(f"\n{e} — nothing stored")
+        return
 
     print(f"\nDone in {job.elapsed:.1f}s, {job.solves} solves. "
           f"Orphans: {len(unused)}. Proved: {job.proved}")
     if args.write:
         print(store_result({'path': path, 'unused': unused, 'ok': sorted(job.ok_cells),
-                            'timeouts': timeouts, 'broken': job.broken,
+                            'broken': job.broken,
                             'problems': job.problems(), 'shapes': job.shapes,
                             'elapsed': job.elapsed, 'error': None}))
 

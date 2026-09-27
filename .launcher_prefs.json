@@ -23,10 +23,8 @@
     "parallel": "5",
     "filters": [
       "failed",
-      "limit achieved",
       "running",
-      "success",
-      "unchecked"
+      "success"
     ],
     "engine": "c",
     "range_from": "1",

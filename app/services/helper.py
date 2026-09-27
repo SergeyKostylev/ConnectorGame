@@ -3,9 +3,6 @@ import random
 import matplotlib.pyplot as plt
 from app.config import MATRIX_DEFAULT_SIZE
 from app.models.Matrix import Matrix
-from collections import defaultdict
-from app.models.MatrixFrame import MatrixFrame
-import app.config as config
 from app.services.DataMapGenerator import Generator
 
 
@@ -40,16 +37,6 @@ def show_graph(matrix: Matrix):
 
     plt.tight_layout()
     plt.show()
-
-def show_in_console(matrix: Matrix):
-    array = defaultdict(lambda: defaultdict(str))
-    for x, y in matrix.iterate_shape():
-        if x not in array:
-            array[x] = {}
-        array[x][y] = get_console_frame(matrix.get_frame(x, y))
-
-    print("\n".join("".join(row.values()) for row in array.values()))
-
 
 def get_default_figure_map():
     # types: pipeline, battery, target
@@ -97,10 +84,3 @@ def unsort_map(map):
 
     return map
 
-
-def print_pretty_figure_matrix(matrix):
-    for _, i in enumerate(matrix):
-        print(i)
-
-def get_console_frame(matrix_fame: MatrixFrame):
-    return config.console_symbols[f"{matrix_fame.name}{matrix_fame.rotation}"]

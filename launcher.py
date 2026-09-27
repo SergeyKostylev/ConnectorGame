@@ -48,7 +48,6 @@ ORPHAN_COLORS = {
     'success':    (110, 190, 110),
     'failed':     (210, 95, 95),
     'broken':     (205, 110, 215),
-    'limit achieved': (210, 170, 70),
     'not checked': (210, 170, 70),
 }
 # row kept in a filtered list although it no longer matches (see LevelListPanel.pinned)
@@ -58,16 +57,15 @@ ORPHAN_BADGE_COLORS = {
     'success':    (70, 130, 70),
     'failed':     (150, 60, 60),
     'broken':     (125, 60, 135),
-    'limit achieved': (150, 115, 45),
     'not checked': (150, 115, 45),
 }
 
 
 def orphan_status(meta):
-    """orphan_check from a level's metadata ('incomplete' was an older name
-    for 'limit achieved')."""
+    """orphan_check from a level's metadata. Values older checks wrote
+    ('limit achieved', 'incomplete') count as not checked."""
     st = meta.get('orphan_check', 'not checked')
-    return 'limit achieved' if st == 'incomplete' else st
+    return 'not checked' if st in ('limit achieved', 'incomplete') else st
 
 
 # levels the batch button checks at once (each solve uses several threads)
@@ -75,9 +73,8 @@ BATCH_PARALLEL = 4
 
 
 # level list filters: key -> checkbox label
-# ('broken' levels are listed under 'failed', see LevelListPanel.state_of)
-LEVEL_FILTERS = {'success': 'success', 'failed': 'failed/broken', 'limit achieved': 'limit',
-                 'unchecked': 'unchecked', 'running': 'in progress'}
+# ('failed' also lists broken and unchecked levels, see LevelListPanel.state_of)
+LEVEL_FILTERS = {'success': 'success', 'failed': 'failed', 'running': 'in progress'}
 
 
 # ── widgets ──────────────────────────────────────────────────────────────────
@@ -424,14 +421,6 @@ class LevelListPanel:
         self._checks[name] = LevelCheck(os.path.join(LEVELS_DIR, f"{name}.json"))
         return True
 
-    def needs_recheck_confirm(self, name):
-        """True if starting a check of `name` would redo a stored success."""
-        check = self._checks.get(name)
-        if check and check.running:
-            return False  # the click stops it — no need to ask
-        entry = next((l for l in self._levels if l['name'] == name), None)
-        return bool(entry) and orphan_status(entry['meta']) == 'success'
-
     def poll_checks(self):
         """Returns [(name, LevelCheck)] for checks that finished since last call."""
         return [(n, c) for n, c in list(self._checks.items()) if c.poll()]
@@ -447,10 +436,8 @@ class LevelListPanel:
         c = self._checks.get(entry['name'])
         if c and c.running:
             return 'running'
-        state = orphan_status(entry['meta'])
-        if state == 'broken':          # one filter for both kinds of bad level
-            return 'failed'
-        return state if state in LEVEL_FILTERS else 'unchecked'
+        # one filter for every level that hasn't passed: failed, broken, unchecked
+        return 'success' if orphan_status(entry['meta']) == 'success' else 'failed'
 
     def visible(self):
         """[(index into _levels, entry)] that pass the filters, plus pinned rows."""
@@ -483,7 +470,7 @@ class LevelListPanel:
             if prev is not None and st != prev and name in self._last_shown \
                     and st not in self.filters:
                 self.pinned.add(name)
-                if st in ('success', 'failed', 'limit achieved'):   # a check result
+                if st in ('success', 'failed'):   # a check result
                     self.blink_until[name] = now + 3000
                     self._scroll_to = name
             self._last_state[name] = st
@@ -1013,7 +1000,6 @@ class LevelCheck:
         self.total    = 0
         self.done     = 0
         self.unused   = []   # tiles that can stay unpowered in a win state
-        self.timeouts = []   # tiles left unsettled when the time limit ran out
         self.ok       = []   # tiles proven never to be orphans
         self.broken   = []   # the solved map is wrong here (unpowered lamp / joined batteries)
         self.shapes   = None # tile shapes the result is valid for (from the worker)
@@ -1051,8 +1037,6 @@ class LevelCheck:
                     self.ok.append(msg[1])
                 elif msg[2] == 'unused':
                     self.unused.append(msg[1])
-                elif msg[2] == 'timeout':
-                    self.timeouts.append(msg[1])
                 elif msg[2] == 'broken':
                     self.broken.append(msg[1])
             elif kind == 'done':
@@ -1101,8 +1085,6 @@ class LevelCheck:
             return "broken"
         if self.unused:
             return f"{len(self.unused)} unused"
-        if self.timeouts:
-            return "limit achieved"
         return "OK"
 
     def color(self):
@@ -1112,8 +1094,6 @@ class LevelCheck:
             return ORPHAN_COLORS['broken']
         if self.error or self.unused:
             return (190, 75, 75)
-        if self.timeouts:
-            return (200, 160, 60)
         return (90, 170, 90)
 
 
@@ -1443,7 +1423,7 @@ class Launcher:
                             self._shuffled_win.has_shuffled_changes())
         return main_changed or shuffled_changed
 
-    # ── check orphans: batch over unchecked levels ────────────────────────────
+    # ── check orphans: batch over every level ─────────────────────────────────
 
     def _levels_panel(self):
         return next(a.panel for a in self._actions if a.panel)
@@ -1551,8 +1531,7 @@ class Launcher:
             rx  = x + col * col_w
             ry  = y + row * (row_h + 2)
 
-            color = {'unchecked': ORPHAN_COLORS['not checked'], 'running': BOR_ACT}.get(
-                key, ORPHAN_COLORS.get(key, FG_DIM))
+            color = {'running': BOR_ACT}.get(key, ORPHAN_COLORS.get(key, FG_DIM))
             cnt = total if key == 'all' else state_counts.get(key, 0)
             on  = (panel.filters == set(LEVEL_FILTERS)) if key == 'all' else key in panel.filters
 
@@ -1707,7 +1686,8 @@ class Launcher:
 
     def _request_check(self, name):
         """Start (or stop) the orphan check of `name`, asking first when the
-        level has unsaved edits or already passed the check."""
+        level has unsaved edits (a check takes well under a second, so a level
+        that already passed is simply checked again)."""
         panel = self._levels_panel()
         def _toggle():
             if panel.toggle_check(name):
@@ -1717,13 +1697,6 @@ class Launcher:
         running = name in panel._checks and panel._checks[name].running
         if not running and self._unsaved_open_level({name}):
             self._ask_save_before_check(name, _toggle)
-        elif panel.needs_recheck_confirm(name):
-            self._confirm_dialog = ConfirmDialog(
-                f"{name}: orphan check already passed",
-                buttons=[('run', 'Run again', True), ('cancel', 'Cancel', False)],
-            )
-            self._pending_action = _toggle
-            self._pending_cancel = None
         else:
             _toggle()
 
@@ -1742,7 +1715,7 @@ class Launcher:
         path = os.path.join(LEVELS_DIR, f"{name}.json")
         from generate import write_orphan_check
         try:
-            saved = write_orphan_check(path, check.unused, check.timeouts,
+            saved = write_orphan_check(path, check.unused,
                                        shapes=check.shapes, broken=check.broken)
         except OSError:
             saved = False
@@ -1769,10 +1742,7 @@ class Launcher:
                     f"or batteries wired together: {cells}")
         if check.unused:
             cells = ", ".join(f"({r},{c})" for r, c in check.unused)
-            more = " — time limit, there may be more" if check.timeouts else ""
-            return f"{name}: {len(check.unused)} tiles can stay unpowered: {cells}{more}{took}"
-        if check.timeouts:
-            return f"{name}: limit achieved — not proved in the time limit{took}"
+            return f"{name}: {len(check.unused)} tiles can stay unpowered: {cells}{took}"
         return f"{name}: success — no win leaves tiles unused{took}"
 
     def _open_generated(self, level_name):
@@ -1934,9 +1904,8 @@ class Launcher:
         self._show_shuffled = edit_prefs.get("show_shuffled", True)
         saved = edit_prefs.get("filters")
         if saved is not None:
-            if 'checked' in saved:   # before success/failed/limit were split
-                saved = list(saved) + ['success', 'failed', 'limit achieved']
-            saved = ['limit achieved' if f == 'incomplete' else f for f in saved]
+            if 'checked' in saved:   # before success/failed were split
+                saved = list(saved) + ['success', 'failed']
             self._levels_panel().filters = {f for f in saved if f in LEVEL_FILTERS}
         self._actions[0].panel._refresh()
         gen_prefs = data.get("Generate", {})
@@ -2241,7 +2210,7 @@ class Launcher:
                         self._pending_cancel  = None
                         if result == 'save' and self._inline_editor:
                             self._do_save_editor()
-                        if result in ('save', 'discard', 'delete', 'run') and action:
+                        if result in ('save', 'discard', 'delete') and action:
                             action()
                         elif result == 'cancel' and cancel:
                             cancel()
