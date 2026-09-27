@@ -2,6 +2,9 @@ import sys
 import os
 import re
 import json
+import fcntl
+import tempfile
+import contextlib
 import subprocess
 from PIL import Image, ImageDraw
 
@@ -111,13 +114,52 @@ def _format_level_json(metadata, meet_map, shuffled_map):
     return '\n'.join(lines)
 
 
+# ── safe writes ──────────────────────────────────────────────────────────────
+# Level files are written by the editors and, concurrently, by orphan checks
+# (progress while they run). Every write goes through level_lock() — one lock
+# for all level files, shared by every process — and replaces the file
+# atomically (temp file + os.replace), so a reader never sees half a file and
+# two writers never interleave.
+
+_LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), LEVELS_DIR, '.metadata.lock')
+
+
+@contextlib.contextmanager
+def level_lock():
+    """Exclusive lock for reading-then-writing level files (all processes)."""
+    os.makedirs(os.path.dirname(_LOCK_PATH), exist_ok=True)
+    with open(_LOCK_PATH, 'a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _atomic_write(path, text):
+    """Write `text` to `path` via a temp file in the same folder + os.replace."""
+    folder = os.path.dirname(path) or '.'
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix='.tmp_', suffix='.json')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def save_level(meet_map, shuffled_map, name, version):
     path = os.path.join(LEVELS_DIR, f"{name}.json")
     encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
     encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
     metadata = _with_orphan_meta(_build_metadata(meet_map, version), {})
-    with open(path, 'w') as f:
-        f.write(_format_level_json(metadata, encoded_meet, encoded_shuffled))
+    with level_lock():
+        _atomic_write(path, _format_level_json(metadata, encoded_meet, encoded_shuffled))
     print(f"Saved: {path}")
     return path
 
@@ -125,13 +167,10 @@ def save_level(meet_map, shuffled_map, name, version):
 def save_level_to(meet_map, shuffled_map, path, version):
     encoded_meet = [[encode_tile(c) for c in row] for row in meet_map]
     encoded_shuffled = [[encode_tile(c) for c in row] for row in shuffled_map]
-    metadata = _with_orphan_meta(_build_metadata(meet_map, version),
-                                 _carry_orphan_meta(path, encoded_meet))
-    dir_ = os.path.dirname(path)
-    if dir_:
-        os.makedirs(dir_, exist_ok=True)
-    with open(path, 'w') as f:
-        f.write(_format_level_json(metadata, encoded_meet, encoded_shuffled))
+    with level_lock():   # the carried orphan data must be what's on disk right now
+        metadata = _with_orphan_meta(_build_metadata(meet_map, version),
+                                     _carry_orphan_meta(path, encoded_meet))
+        _atomic_write(path, _format_level_json(metadata, encoded_meet, encoded_shuffled))
     print(f"Saved: {path}")
 
 
@@ -140,8 +179,15 @@ def save_level_to(meet_map, shuffled_map, path, version):
 #                    older files may say "incomplete" for "limit achieved")
 # orphan_cells:      tiles that can stay unpowered in a win   (always present, "" if none)
 # orphan_unresolved: tile that hit the search step limit — the check stops there
+# orphan_stopped:    tiles not finished because the level was already failed
+#                    (too expensive after an orphan was found — not verified)
+# orphan_ok:         tiles proven fine — written while the check runs, so a
+#                    stopped / closed check can be resumed without redoing them
+# orphan_time:       how long the check took, seconds
+# All of them are dropped when a tile's shape/type changes (see _carry_orphan_meta).
 
-ORPHAN_KEYS = ('orphan_check', 'orphan_cells', 'orphan_unresolved')
+ORPHAN_KEYS = ('orphan_check', 'orphan_cells', 'orphan_unresolved', 'orphan_stopped',
+               'orphan_ok', 'orphan_time')
 
 
 def _with_orphan_meta(meta, orphan):
@@ -151,14 +197,21 @@ def _with_orphan_meta(meta, orphan):
     if 'orphan_check' in orphan:
         out['orphan_check'] = orphan['orphan_check']
     out['orphan_cells'] = orphan.get('orphan_cells', '')
-    if 'orphan_unresolved' in orphan:
-        out['orphan_unresolved'] = orphan['orphan_unresolved']
+    for key in ('orphan_unresolved', 'orphan_stopped', 'orphan_ok', 'orphan_time'):
+        if key in orphan:
+            out[key] = orphan[key]
     return out
 
 
 def _shapes(encoded_map):
     """Encoded map without rotations: [["name:type", ...], ...]."""
     return [[':'.join(c.split(':')[::2]) for c in row] for row in encoded_map or []]
+
+
+def level_shapes(path):
+    """Shapes/types of a level's solved map — what an orphan check result depends on."""
+    with open(path) as f:
+        return _shapes(json.load(f).get('meet_map'))
 
 
 def _carry_orphan_meta(path, encoded_meet):
@@ -178,13 +231,13 @@ def _carry_orphan_meta(path, encoded_meet):
 def add_orphan_cells_key(path):
     """Add the (empty) orphan_cells key to a level file that lacks it;
     nothing else in the file changes. Returns True if the file was updated."""
-    with open(path) as f:
-        obj = json.load(f)
-    if 'orphan_cells' in obj['metadata']:
-        return False
-    meta = _with_orphan_meta(obj['metadata'], obj['metadata'])
-    with open(path, 'w') as f:
-        f.write(_format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
+    with level_lock():
+        with open(path) as f:
+            obj = json.load(f)
+        if 'orphan_cells' in obj['metadata']:
+            return False
+        meta = _with_orphan_meta(obj['metadata'], obj['metadata'])
+        _atomic_write(path, _format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
     return True
 
 
@@ -192,21 +245,61 @@ def _format_cells(cells):
     return " ".join(f"({r},{c})" for r, c in cells)
 
 
-def write_orphan_check(path, unused, unresolved):
-    """Store an orphan check result in the level's metadata."""
-    with open(path) as f:
-        obj = json.load(f)
-    if unused:
-        orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(unused)}
-    elif unresolved:
-        orphan = {'orphan_check': 'limit achieved'}
-    else:
-        orphan = {'orphan_check': 'success'}
-    if unresolved:
-        orphan['orphan_unresolved'] = _format_cells(unresolved)
-    meta = _with_orphan_meta(obj['metadata'], orphan)
-    with open(path, 'w') as f:
-        f.write(_format_level_json(meta, obj['meet_map'], obj.get('shuffled_map') or []))
+def parse_cells(text):
+    """"(1,2) (3,4)" -> [(1, 2), (3, 4)]"""
+    return [(int(r), int(c)) for r, c in re.findall(r'\((\d+),(\d+)\)', text or '')]
+
+
+def _update_orphan_meta(path, shapes, change):
+    """Transaction on a level's orphan metadata: under level_lock(), re-read
+    the file, and only if its tile shapes are still `shapes` (the level the
+    check looked at), apply change(orphan_dict) and write atomically. Only
+    orphan keys change; maps and other metadata stay as they are on disk.
+    Returns False (nothing written) if the level changed meanwhile."""
+    with level_lock():
+        with open(path) as f:
+            obj = json.load(f)
+        if shapes is not None and _shapes(obj['meet_map']) != shapes:
+            return False
+        meta = obj['metadata']
+        orphan = change({k: meta[k] for k in ORPHAN_KEYS if k in meta})
+        _atomic_write(path, _format_level_json(_with_orphan_meta(meta, orphan),
+                                               obj['meet_map'], obj.get('shuffled_map') or []))
+    return True
+
+
+def write_orphan_progress(path, shapes, ok, unused):
+    """While a check runs: record the tiles proven fine so far (and orphans
+    found so far — the level is failed as soon as there is one)."""
+    def change(orphan):
+        orphan['orphan_ok'] = _format_cells(sorted(ok))
+        if unused:
+            orphan['orphan_check'] = 'failed'
+            orphan['orphan_cells'] = _format_cells(sorted(unused))
+        return orphan
+    return _update_orphan_meta(path, shapes, change)
+
+
+def write_orphan_check(path, unused, unresolved, stopped=(), elapsed=None, ok=(), shapes=None):
+    """Store a finished orphan check in the level's metadata. With `shapes`,
+    nothing is written if the level's tiles changed since the check started."""
+    def change(_old):
+        if unused:
+            orphan = {'orphan_check': 'failed', 'orphan_cells': _format_cells(sorted(unused))}
+        elif unresolved:
+            orphan = {'orphan_check': 'limit achieved'}
+        else:
+            orphan = {'orphan_check': 'success'}
+        if unresolved:
+            orphan['orphan_unresolved'] = _format_cells(unresolved)
+        if stopped:
+            orphan['orphan_stopped'] = _format_cells(sorted(stopped))
+        if ok:
+            orphan['orphan_ok'] = _format_cells(sorted(ok))
+        if elapsed is not None:
+            orphan['orphan_time'] = f"{elapsed:.1f}s"
+        return orphan
+    return _update_orphan_meta(path, shapes, change)
 
 
 def _tile_path(cell, connected=False):

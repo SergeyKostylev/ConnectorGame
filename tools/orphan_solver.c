@@ -9,15 +9,18 @@
  * Protocol (text, one long-lived process per level check; driven by
  * CSolver in orphan_checker.py):
  *
- *   in:   Q <rows> <cols> <candidate> <budget> <found_budget>
+ *   in:   Q <rows> <cols> <candidate> <budget> <found_budget> <found>
  *         then rows*cols cells, row-major:  <type> <ndom> <mask> ... <mask>
  *           type: 0 pipeline/wall, 1 battery, 2 target
  *           mask: open sides, bit 0 up, 1 right, 2 down, 3 left
  *         budget:       steps allowed per tile while no orphan was found yet
- *         found_budget: steps allowed per tile once this process has found an
- *                       orphan (the level is failed; it's only worth
- *                       continuing while tiles are cheap)
- *         Both come with every query, so changing them in Python needs no rebuild.
+ *         found_budget: steps allowed per tile once an orphan was found (the
+ *                       level is failed; it's only worth continuing while
+ *                       tiles are cheap)
+ *         found:        1 if the level check already found an orphan (the
+ *                       checker runs several solvers in parallel and tells
+ *                       each one), 0 otherwise
+ *         All come with every query, so changing them in Python needs no rebuild.
  *
  *   out:  P <steps>                     progress, every 65536 steps
  *         R ok <steps>                  no win state leaves the candidate unpowered
@@ -40,7 +43,7 @@ static const int DC[4]  = {0, 1, 0, -1};
 
 static int n, rows, cols, cand;
 static long long budget, found_budget, limit, steps;
-static int found_any;            /* this process has already reported an orphan */
+static int found_any;            /* an orphan was found: by this process or (per query) the level check */
 
 static int *type_, *ndom, (*dom)[4], (*nb)[4];
 static int *asg;                 /* -1 = undecided, else the chosen pattern mask */
@@ -178,10 +181,13 @@ static int read_query(void) {
     char tag[8];
     if (scanf("%7s", tag) != 1) return 0;
     if (strcmp(tag, "Q") != 0) { fprintf(stderr, "orphan_solver: bad input\n"); exit(1); }
-    if (scanf("%d %d %d %lld %lld", &rows, &cols, &cand, &budget, &found_budget) != 5) {
+    int found_flag;
+    if (scanf("%d %d %d %lld %lld %d", &rows, &cols, &cand, &budget, &found_budget,
+              &found_flag) != 6) {
         fprintf(stderr, "orphan_solver: bad query header (rebuild: make build-solver)\n");
         exit(1);
     }
+    if (found_flag) found_any = 1;
     n = rows * cols;
 
     type_ = xalloc(sizeof(int) * n);   ndom = xalloc(sizeof(int) * n);

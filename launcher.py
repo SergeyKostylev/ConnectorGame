@@ -11,7 +11,7 @@ from app.services.DataMapGeneratorV3 import DEFAULT_TARGETS_PCT
 PREFS_FILE  = ".launcher_prefs.json"
 LEVELS_DIR  = "levels"
 
-W, H      = 480, 420
+W, H      = 620, 420
 HEADER_H  = 50
 STATUS_H  = 30
 RUN_H     = 34
@@ -23,7 +23,6 @@ INP_W     = 160
 STEP_W    = 22
 CAPTION_H = 20   # 'shuffled' / 'solved' labels above the two maps
 NAME_H    = 28   # level name above the maps
-LOCK_H    = 78   # orphan check progress above the maps while the level is locked
 
 BG        = (30,  30,  30 )
 HEADER    = (45,  45,  45 )
@@ -68,6 +67,15 @@ def orphan_status(meta):
     return 'limit achieved' if st == 'incomplete' else st
 
 
+def _orphan_checker_module():
+    """tools/orphan_checker.py (for its default settings)."""
+    tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import orphan_checker
+    return orphan_checker
+
+
 # level list filters: key -> checkbox label
 LEVEL_FILTERS = {'success': 'success', 'failed': 'failed', 'limit achieved': 'limit',
                  'unchecked': 'unchecked', 'running': 'in progress'}
@@ -76,13 +84,16 @@ LEVEL_FILTERS = {'success': 'success', 'failed': 'failed', 'limit achieved': 'li
 # ── widgets ──────────────────────────────────────────────────────────────────
 
 class TextInput:
-    def __init__(self, placeholder="", step=1, min_val=1, max_val=None):
+    def __init__(self, placeholder="", step=1, min_val=1, max_val=None, group=False, width=None):
         self.placeholder = placeholder
         self.step    = step
         self.min_val = min_val
         self.max_val = max_val
+        self.group   = group    # show 1000000000 as 1_000_000_000
+        self.width   = width    # field width override (default INP_W)
         self.value   = ""
         self.active  = False
+        self._fresh  = False    # just focused: the first digit replaces the value
         self.rect    = pygame.Rect(0, 0, 0, 0)
         self._minus  = pygame.Rect(0, 0, 0, 0)
         self._plus   = pygame.Rect(0, 0, 0, 0)
@@ -117,15 +128,21 @@ class TextInput:
                 self.active = False
             else:
                 self.active = self.rect.collidepoint(event.pos)
+                self._fresh = self.active
         elif event.type == pygame.KEYDOWN and self.active:
             if event.key == pygame.K_BACKSPACE:
                 self.value = self.value[:-1]
-            elif event.key == pygame.K_ESCAPE:
+                self._fresh = False
+            elif event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.active = False
             elif event.unicode.isdigit():
-                new = self.value + event.unicode
-                if self.max_val is None or int(new) <= self.max_val:
-                    self.value = new
+                new = event.unicode if self._fresh else self.value + event.unicode
+                self._fresh = False
+                # over the maximum: snap to it instead of ignoring the key
+                if self.max_val is not None and int(new) > self.max_val:
+                    new = str(self.max_val)
+                self.value = new
+            # '_' (digit grouping) is accepted and ignored: only digits are stored
 
     def _draw_step_btn(self, surf, font, rect, label, hovered):
         color = BTN_HOV if hovered else INPUT_BG
@@ -150,6 +167,8 @@ class TextInput:
 
         text  = self.value if self.value else self.placeholder
         color = FG         if self.value else FG_DIM
+        if self.group and text.isdigit():
+            text = f"{int(text):_}"
         txt = font.render(text, True, color)
         surf.blit(txt, (self.rect.centerx - txt.get_width() // 2,
                         self.rect.y + (INPUT_H - txt.get_height()) // 2))
@@ -248,6 +267,7 @@ class LevelListPanel:
         self._checks      = {}   # level name -> LevelCheck
         # which levels the list shows, by orphan check state
         self.filters      = set(LEVEL_FILTERS)
+        self.get_settings = None   # () -> CheckJob kwargs (budget, found_budget, parallel)
         # rows kept on screen although they no longer match the filters
         # (their state changed while shown); cleared by refresh / filter change
         self.pinned       = set()
@@ -303,15 +323,17 @@ class LevelListPanel:
 
     # ── unused-tile checks ───────────────────────────────────────────────────
 
-    def toggle_check(self, name):
-        """Start a check of `name`, or stop it if it is running.
+    def toggle_check(self, name, fresh=False):
+        """Start a check of `name`, or stop it if it is running. A new check
+        continues from progress saved in the level's metadata unless `fresh`.
         Returns True if a check was started."""
         check = self._checks.get(name)
         if check and check.running:
             check.stop()
             del self._checks[name]
             return False
-        self._checks[name] = LevelCheck(os.path.join(LEVELS_DIR, f"{name}.json"))
+        settings = self.get_settings() if self.get_settings else None
+        self._checks[name] = LevelCheck(os.path.join(LEVELS_DIR, f"{name}.json"), fresh, settings)
         return True
 
     def needs_recheck_confirm(self, name):
@@ -565,11 +587,12 @@ class LevelListPanel:
 # ── action definition ─────────────────────────────────────────────────────────
 
 class Action:
-    def __init__(self, label, inputs, run_fn, panel=None):
+    def __init__(self, label, inputs, run_fn, panel=None, notes=()):
         self.label  = label
         self.inputs = inputs   # list of (label_str, widget)
-        self.run_fn = run_fn
+        self.run_fn = run_fn   # None: a settings tab without a run button
         self.panel  = panel
+        self.notes  = notes    # short help lines drawn under the inputs
 
 
 # ── confirm dialog ────────────────────────────────────────────────────────────
@@ -859,7 +882,7 @@ class InlineEditor:
 
 # ── level check (separate process) ────────────────────────────────────────────
 
-def _check_worker(level_path, sys_path, out_queue):
+def _check_worker(level_path, sys_path, out_queue, fresh=False, settings=None):
     """Runs in a child process: tools/orphan_checker.py over one level,
     reporting progress per checked tile. The check stops at the first tile
     that hits the step limit (status 'limit achieved')."""
@@ -869,18 +892,22 @@ def _check_worker(level_path, sys_path, out_queue):
             sys.path.insert(0, p)
     t0 = time.time()
     try:
-        from orphan_checker import CheckJob
-        job = CheckJob(level_path)
+        from orphan_checker import CheckJob, log_path_for
+        # progress goes to the level's metadata while running, so a stopped
+        # check continues where it was; fresh = check every tile again
+        job = CheckJob(level_path, log_path=log_path_for(level_path),
+                       resume=not fresh, persist=True, **(settings or {}))
         if job.dangling:
             out_queue.put(('error', 'meet_map has unmatched connectors'))
             return
-        out_queue.put(('total', job.total, job.budget))
-        last = [0.0]
+        out_queue.put(('total', job.total, job.budget, job.shapes))
+        last = {}
         def progress(cell, steps):
-            # a new tile always reports; within a tile at most ~3 times a second
+            # tiles run in parallel: each reports when it starts, then at most
+            # ~3 times a second
             now = time.time()
-            if steps == 0 or now - last[0] >= 0.3:
-                last[0] = now
+            if steps == 0 or now - last.get(cell, 0.0) >= 0.3:
+                last[cell] = now
                 out_queue.put(('tile', cell, steps))
         for cell, _shape, status in job.run(on_progress=progress):
             out_queue.put(('cell', cell, status))
@@ -892,7 +919,7 @@ def _check_worker(level_path, sys_path, out_queue):
 class LevelCheck:
     """A running or finished unused-tile check of one level file."""
 
-    def __init__(self, level_path):
+    def __init__(self, level_path, fresh=False, settings=None):
         import sys, multiprocessing
         self.mtime    = os.path.getmtime(level_path)
         self.total    = 0
@@ -900,20 +927,21 @@ class LevelCheck:
         self.unused   = []   # tiles that can stay unpowered in a win state
         self.timeouts = []   # tile that hit the step limit (the check stops there)
         self.stopped_early = False   # a tile got too expensive after an orphan was found
+        self.stopped  = []   # those tiles (not verified; level already failed)
+        self.ok       = []   # tiles proven fine (incl. ones settled by an earlier run)
+        self.shapes   = None # tile shapes the result is valid for (from the worker)
         self.error    = None
         self.elapsed  = None
         self.running  = True
         import time as _time
         self.started    = _time.time()
         self.budget     = 0      # search steps allowed per tile
-        self.tile       = None   # (row, col) being checked right now
-        self.tile_steps = 0      # search steps spent on it so far
-        self.tile_start = None
+        self.tiles      = {}     # (row, col) running now -> [search steps, start time]
         tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
         self._queue = multiprocessing.Queue()
         self._proc  = multiprocessing.Process(
             target=_check_worker,
-            args=(level_path, [tools_dir] + sys.path, self._queue),
+            args=(level_path, [tools_dir] + sys.path, self._queue, fresh, settings),
             daemon=True,
         )
         self._proc.start()
@@ -929,20 +957,22 @@ class LevelCheck:
             if kind == 'total':
                 self.total = msg[1]
                 self.budget = msg[2] if len(msg) > 2 else 0
+                self.shapes = msg[3] if len(msg) > 3 else None
             elif kind == 'tile':
                 import time as _time
-                if msg[1] != self.tile:
-                    self.tile, self.tile_start = msg[1], _time.time()
-                self.tile_steps = msg[2]
+                self.tiles.setdefault(msg[1], [0, _time.time()])[0] = msg[2]
             elif kind == 'cell':
                 self.done += 1
-                self.tile = None
-                if msg[2] == 'unused':
+                self.tiles.pop(msg[1], None)
+                if msg[2] == 'ok':
+                    self.ok.append(msg[1])
+                elif msg[2] == 'unused':
                     self.unused.append(msg[1])
                 elif msg[2] == 'timeout':
                     self.timeouts.append(msg[1])
                 elif msg[2] == 'stopped':
                     self.stopped_early = True
+                    self.stopped.append(msg[1])
             elif kind == 'done':
                 self.elapsed = msg[1]
                 self.running = False
@@ -964,19 +994,18 @@ class LevelCheck:
         return not self.running
 
     def progress_lines(self):
-        """(badge text, line above it) for the lock overlay while running."""
+        """(badge text, [one full line per running tile, heaviest first])."""
         import time as _time
         fmt = lambda s: f"{int(s) // 60}:{int(s) % 60:02d}"
+        num = lambda n: f"{n:,}".replace(",", " ")
         now   = _time.time()
         badge = (f"Orphan check running · {self.done}/{self.total} · {fmt(now - self.started)}"
                  if self.total else "Orphan check starting…")
-        above = None
-        if self.tile is not None:
-            r, c  = self.tile
-            steps = f"{self.tile_steps:,}".replace(",", " ")
-            limit = f" / {self.budget:,}".replace(",", " ") if self.budget else ""
-            above = f"tile ({r},{c}) · {steps}{limit} steps · {fmt(now - self.tile_start)}"
-        return badge, above
+        limit = f" / {num(self.budget)}" if self.budget else ""
+        tiles = [f"tile ({r},{c}) · {num(steps)}{limit} steps · {fmt(now - start)}"
+                 for (r, c), (steps, start) in sorted(self.tiles.items(),
+                                                      key=lambda t: -t[1][0])]
+        return badge, tiles
 
     def stop(self):
         if self._proc.is_alive():
@@ -1013,19 +1042,18 @@ def _dim_locked(surf, rect):
     surf.blit(dim, rect.topleft)
 
 
-def _draw_lock_banner(surf, centerx, top, label, hint=None, above=None):
-    """Lock info drawn ABOVE the maps (so no tiles are covered), in a block
-    LOCK_H high starting at `top`: `above` (current tile progress), then a
+# while a level's check runs: badge + hint above the map, per-tile log on its left
+LOCK_BADGE_H, LOCK_HINT_H = 32, 18
+LOCK_BANNER_H = LOCK_BADGE_H + 4 + LOCK_HINT_H + 6
+TILE_LOG_W, TILE_LOG_LINE_H = 400, 18
+
+
+def _draw_lock_banner(surf, centerx, top, label, hint=None):
+    """Above the map (so no tiles are covered), LOCK_BANNER_H high: a
     non-clickable button-like badge with `label`, then `hint`."""
-    y = top
-    af = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 13, bold=True)
-    if above:
-        at = af.render(above, True, FG)
-        surf.blit(at, (centerx - at.get_width() // 2, y))
-    y += af.get_height() + 4
     font = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 16, bold=True)
     t    = font.render(label, True, FG)
-    btn  = pygame.Rect(0, y, t.get_width() + 32, t.get_height() + 10)
+    btn  = pygame.Rect(0, top, t.get_width() + 32, LOCK_BADGE_H)
     btn.centerx = centerx
     pygame.draw.rect(surf, (60, 90, 130), btn, border_radius=8)
     pygame.draw.rect(surf, BOR_ACT, btn, 1, border_radius=8)
@@ -1033,6 +1061,24 @@ def _draw_lock_banner(surf, centerx, top, label, hint=None, above=None):
     if hint:
         ht = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 12).render(hint, True, FG_DIM)
         surf.blit(ht, (centerx - ht.get_width() // 2, btn.bottom + 4))
+
+
+def _draw_tile_log(surf, x, y, w, h, lines):
+    """The tiles being searched right now, one line each (heaviest first),
+    in a column to the left of the map; lines that don't fit are counted."""
+    if w <= 0 or h <= 0:
+        return
+    font = pygame.font.SysFont("helveticaneue,helvetica,arial,sans", 13, bold=True)
+    clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(x, y, w, h))
+    fits = max(1, h // TILE_LOG_LINE_H)
+    shown = lines if len(lines) <= fits else lines[:fits - 1]
+    for i, text in enumerate(shown):
+        surf.blit(font.render(text, True, FG), (x, y + i * TILE_LOG_LINE_H))
+    if len(shown) < len(lines):
+        more = font.render(f"… {len(lines) - len(shown)} more", True, FG_DIM)
+        surf.blit(more, (x, y + len(shown) * TILE_LOG_LINE_H))
+    surf.set_clip(clip)
 
 
 def _draw_orphan_marks(surf, rect, scale, tile_px, marks):
@@ -1215,11 +1261,44 @@ class Launcher:
             ("empty level", Checkbox()),
             ("check orphans", Checkbox()),
         ]
+        # orphan check settings — defaults are the constants in tools/orphan_checker.py
+        oc = _orphan_checker_module()
+        self._check_inputs = {
+            'budget':       TextInput(str(oc.DEFAULT_BUDGET),      step=10_000_000, min_val=1000,
+                                      group=True, width=210),
+            'found_budget': TextInput(str(oc.AFTER_ORPHAN_BUDGET), step=1_000_000,  min_val=1000,
+                                      group=True, width=210),
+            'parallel':     TextInput(str(oc.PARALLEL_TILES),      step=1, min_val=1, max_val=30,
+                                      width=210),
+        }
+        check_inputs = [
+            ("step limit",     self._check_inputs['budget']),
+            ("after orphan",   self._check_inputs['found_budget']),
+            ("parallel tiles", self._check_inputs['parallel']),
+        ]
+        check_notes = [
+            "step limit — search steps per tile until an orphan is found;",
+            "   a tile past it stops the check: 'limit achieved'",
+            "after orphan — steps per tile once the level is failed;",
+            "   tiles past it are dropped (orphan_stopped)",
+            "parallel tiles — tiles of one level searched at once (1–30);",
+            "   more than the CPU cores (12) is not faster overall",
+            "",
+            "Used by every check started from the launcher. Empty = default",
+            "from tools/orphan_checker.py (make check-orphans uses those).",
+        ]
+        panel = LevelListPanel()
+        panel.get_settings = self._check_settings
         return [
             Action("Generate v3",  gen_inputs,         self._do_generate),
             Action("Edit Levels",  [],                 self._do_edit_levels,
-                   panel=LevelListPanel()),
+                   panel=panel),
+            Action("Orphan Check", check_inputs,       None, notes=check_notes),
         ]
+
+    def _check_settings(self):
+        """Settings for new orphan checks, from the Orphan Check tab."""
+        return {key: max(w.min_val, w._current()) for key, w in self._check_inputs.items()}
 
     # ── generate v3 ───────────────────────────────────────────────────────────
 
@@ -1449,8 +1528,8 @@ class Launcher:
         """Start (or stop) the orphan check of `name`, asking first when the
         level has unsaved edits or already passed the check."""
         panel = self._levels_panel()
-        def _toggle():
-            if panel.toggle_check(name):
+        def _toggle(fresh=False):
+            if panel.toggle_check(name, fresh):
                 self.status = f"Checking {name} for unused tiles…"
             else:
                 self.status = f"Check of {name} stopped"
@@ -1462,7 +1541,7 @@ class Launcher:
                 f"{name}: orphan check already passed",
                 buttons=[('run', 'Run again', True), ('cancel', 'Cancel', False)],
             )
-            self._pending_action = _toggle
+            self._pending_action = lambda: _toggle(fresh=True)   # every tile again
             self._pending_cancel = None
         else:
             _toggle()
@@ -1480,14 +1559,16 @@ class Launcher:
         if check.error:
             return self._check_status(name, check)
         path = os.path.join(LEVELS_DIR, f"{name}.json")
-        try:
-            changed = os.path.getmtime(path) != check.mtime
-        except OSError:
-            changed = True
-        if changed:
-            return f"{name}: level changed during the check — result not saved"
         from generate import write_orphan_check
-        write_orphan_check(path, check.unused, check.timeouts)
+        try:
+            saved = write_orphan_check(path, check.unused, check.timeouts, check.stopped,
+                                       check.elapsed, ok=check.ok, shapes=check.shapes)
+        except OSError:
+            saved = False
+        if not saved:
+            panel._checks.pop(name, None)
+            panel.reload()
+            return f"{name}: tiles changed during the check — result not saved"
         ed = self._inline_editor
         if ed is not None and os.path.abspath(ed._file_path) == os.path.abspath(path):
             ed._orphan_check  = ed.read_orphan_check()
@@ -1503,7 +1584,8 @@ class Launcher:
         took = f" ({check.elapsed:.1f}s)" if check.elapsed is not None else ""
         if check.unused:
             cells = ", ".join(f"({r},{c})" for r, c in check.unused)
-            early = " — stopped early, more may exist" if check.stopped_early else ""
+            early = (f" — {len(check.stopped)} tiles dropped, more may exist"
+                     if check.stopped_early else "")
             return f"{name}: tiles can stay unpowered in a win: {cells}{early}{took}"
         if check.timeouts:
             cells = ", ".join(f"({r},{c})" for r, c in check.timeouts)
@@ -1666,7 +1748,7 @@ class Launcher:
                     widget.checked = prefs[label]
 
     def _run_selected(self):
-        if self._busy:
+        if self._busy or self._actions[self._sel].run_fn is None:
             return
         self._save_prefs()
         self._busy  = True
@@ -1881,11 +1963,22 @@ class Launcher:
                 self._draw_meta_line(fnt, "new:    ", new_meta,
                                      mx, by0 + lh + 2, FG if has_changes else FG_DIM)
                 editor_y = HEADER_H + PAD + RUN_H + PAD + NAME_H
+                lock_h = 0
                 if locked:
-                    editor_y += LOCK_H   # room for the lock info above the maps
+                    lock_check = self._levels_panel()._checks.get(level_name)
+                    lock_badge, lock_tiles = lock_check.progress_lines()
+                    lock_h = LOCK_BANNER_H
+                    editor_y += lock_h   # room for the badge above the map
                 editor_h = sh - STATUS_H - editor_y - PAD
                 ed_x, ed_w = detail_x, detail_w
-                if self._shuffled_win:
+                show_shuffled = self._shuffled_win is not None and not locked
+                if self._shuffled_win and locked:
+                    self._shuffled_win.rect = pygame.Rect(0, 0, 0, 0)   # hidden: no clicks
+                if locked:
+                    # the per-tile log takes the left part while the check runs
+                    ed_w = max(100, detail_w - TILE_LOG_W - PAD)
+                    ed_x = detail_x + detail_w - ed_w
+                if show_shuffled:
                     # shuffled on the left, solved (editable) on the right
                     half = (detail_w - PAD) // 2
                     self._shuffled_win.marks = self._inline_editor.orphan_marks()
@@ -1898,22 +1991,23 @@ class Launcher:
                     editor_h -= CAPTION_H
                 self._inline_editor.draw(self.screen, ed_x, editor_y, ed_w, editor_h)
                 maps = [self._inline_editor.rect]
-                if self._shuffled_win:
+                if show_shuffled:
                     er = self._inline_editor.rect
                     self._draw_map_caption("solved", er.x, er.y - CAPTION_H, er.width)
                     maps.append(self._shuffled_win.rect)
                 # level name — centred above the maps (and their captions);
-                # while locked, the check progress sits between the name and the maps
-                top  = min(r.y for r in maps) - (CAPTION_H if self._shuffled_win else 0)
+                # while locked, the check badge sits between the name and the map,
+                # and the per-tile log runs down the right side
+                top  = min(r.y for r in maps) - (CAPTION_H if show_shuffled else 0)
                 left = min(r.x for r in maps); right = max(r.right for r in maps)
                 if locked:
-                    top -= LOCK_H
-                    _dim_locked(self.screen, self._inline_editor.rect)
-                    check = self._levels_panel()._checks.get(level_name)
-                    badge, above = check.progress_lines()
-                    _draw_lock_banner(self.screen, (left + right) // 2, top, badge,
-                                      "editing is locked — press Stop in the list to edit now",
-                                      above)
+                    top -= lock_h
+                    er = self._inline_editor.rect
+                    _dim_locked(self.screen, er)
+                    _draw_lock_banner(self.screen, (left + right) // 2, top, lock_badge,
+                                      "editing is locked — press Stop in the list to edit now")
+                    _draw_tile_log(self.screen, detail_x, er.y, ed_x - PAD - detail_x,
+                                   sh - STATUS_H - PAD - er.y, lock_tiles)
                 nt = self.font_h.render(level_name, True, FG)
                 self.screen.blit(nt, ((left + right - nt.get_width()) // 2,
                                       top - NAME_H + (NAME_H - nt.get_height()) // 2))
@@ -1927,22 +2021,30 @@ class Launcher:
             for label, widget in action.inputs:
                 lbl = self.font.render(label, True, FG_DIM)
                 self.screen.blit(lbl, (row_x, y + (INPUT_H - lbl.get_height()) // 2))
-                widget.draw(self.screen, self.font, inp_x, y, INP_W)
+                widget.draw(self.screen, self.font, inp_x, y,
+                            getattr(widget, 'width', None) or INP_W)
                 y += ROW_H
+            for note in action.notes:
+                nt = self._font_sm.render(note, True, FG_DIM)
+                self.screen.blit(nt, (row_x, y))
+                y += nt.get_height() + 2
 
             # run button — bottom of the window, but never over the last input row
             run_y    = max(sh - STATUS_H - PAD - RUN_H, y + PAD)
             run_rect = pygame.Rect(row_x, run_y, row_w, RUN_H)
-            if self._busy:
+            if action.run_fn is None:
+                run_rect = pygame.Rect(0, 0, 0, 0)   # settings tab: nothing to run
+            elif self._busy:
                 run_color, run_fg = BTN_DIS, FG_DIS
             elif run_hov:
                 run_color, run_fg = BTN_HOV, FG
             else:
                 run_color, run_fg = BTN_BG, FG
-            pygame.draw.rect(self.screen, run_color, run_rect, border_radius=6)
-            rt = self.font.render(action.label, True, run_fg)
-            self.screen.blit(rt, (run_rect.centerx - rt.get_width() // 2,
-                                   run_rect.centery - rt.get_height() // 2))
+            if run_rect.width:
+                pygame.draw.rect(self.screen, run_color, run_rect, border_radius=6)
+                rt = self.font.render(action.label, True, run_fg)
+                self.screen.blit(rt, (run_rect.centerx - rt.get_width() // 2,
+                                       run_rect.centery - rt.get_height() // 2))
 
             # dropdown overlays on top
             for _, widget in action.inputs:

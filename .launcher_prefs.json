@@ -1,7 +1,7 @@
 {
   "window_size": [
     1380,
-    690
+    801
   ],
   "selected": 1,
   "Generate v3": {
@@ -25,11 +25,17 @@
       "failed",
       "limit achieved",
       "running",
+      "success",
       "unchecked"
     ],
     "engine": "c"
   },
   "Check Orphans": {
     "parallel": ""
+  },
+  "Orphan Check": {
+    "step limit": "1040000000",
+    "after orphan": "10000000",
+    "parallel tiles": "30"
   }
 }

@@ -173,3 +173,8 @@ cython_debug/
 .tmp
 # compiled orphan solver (make build-solver)
 tools/orphan_solver
+
+# orphan check logs (tools/orphan_checker.py)
+logs/
+levels/.metadata.lock
+levels/.tmp_*
